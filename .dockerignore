@@ -1,0 +1,24 @@
+# Backend .dockerignore — exclude files unnecessary for the Docker build context
+.env
+.env.*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+dist/
+build/
+*.egg-info/
+tests/
+.git/
+.gitignore
+*.md
+docs/
