@@ -36,7 +36,10 @@ from app.core.database import Base  # noqa: F401
 # Import all models so their tables are registered on Base.metadata.
 # Add new model modules here as they are created.
 # fmt: off
-from app.tenants import models as _tenant_models  # noqa: F401
+from app.tenants import models as _tenant_models          # noqa: F401
+from app.agents import models as _agent_models            # noqa: F401
+from app.integrations import models as _integration_models  # noqa: F401
+from app.admin import models as _admin_models             # noqa: F401
 # fmt: on
 
 # ---------------------------------------------------------------------------
