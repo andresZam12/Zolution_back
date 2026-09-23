@@ -1,0 +1,31 @@
+# =============================================================================
+# Zolution Backend — Python Dependencies
+# Pinned to minor versions for reproducibility.
+# Run: pip install -r requirements.txt
+# =============================================================================
+
+# --- Web framework & server ---------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+
+# --- Data validation & configuration -----------------------------------------
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# --- Database (async SQLAlchemy + PostgreSQL driver) --------------------------
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+
+# --- Authentication (Auth0 JWT validation) ------------------------------------
+python-jose[cryptography]==3.3.0
+httpx==0.28.1          # Async HTTP client for JWKS fetching
+
+# --- Utilities ----------------------------------------------------------------
+python-multipart==0.0.20  # Required for FastAPI form data / file uploads
+tenacity==9.0.0           # Retry logic (LLM calls, external API calls)
+
+# =============================================================================
+# Development & testing dependencies
+# Install with: pip install -r requirements-dev.txt
+# =============================================================================
