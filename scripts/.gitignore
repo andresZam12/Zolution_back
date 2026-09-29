@@ -1,0 +1,3 @@
+# Diagnostic results contain API responses — exclude from git
+# Re-run the script to reproduce results
+results/

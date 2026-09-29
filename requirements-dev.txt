@@ -19,3 +19,5 @@ httpx==0.28.1           # Also used in tests for async test client
 
 # --- Database testing ---------------------------------------------------------
 aiosqlite==0.20.0       # In-memory SQLite for unit tests (no postgres needed)
+python-dotenv==1.0.1    # Auto .env loading in standalone scripts
+
