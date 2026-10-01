@@ -18,10 +18,10 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Literal
 
-
 # ---------------------------------------------------------------------------
 # Value objects
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ConversationMessage:
@@ -85,6 +85,7 @@ class LLMResponse:
 # ---------------------------------------------------------------------------
 # Abstract provider interface
 # ---------------------------------------------------------------------------
+
 
 class LLMProvider(ABC):
     """

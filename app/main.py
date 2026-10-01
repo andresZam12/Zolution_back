@@ -16,10 +16,10 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
-
 # ---------------------------------------------------------------------------
 # Lifespan — startup / shutdown hooks
 # ---------------------------------------------------------------------------
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     configure_logging(level=settings.LOG_LEVEL)
 
     # Import here to avoid circular imports at module load time
-    from app.core.database import engine  # noqa: PLC0415
+    from app.core.database import engine
 
     # Verify the database is reachable before accepting traffic
     async with engine.connect() as conn:
@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # ---------------------------------------------------------------------------
 # Application factory
 # ---------------------------------------------------------------------------
+
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
@@ -74,7 +75,7 @@ def create_app() -> FastAPI:
 
 def _register_middleware(app: FastAPI, settings: "Settings") -> None:  # type: ignore[name-defined]  # noqa: F821
     """Attach all middleware to the application."""
-    from app.core.middleware import TenantContextMiddleware  # noqa: PLC0415
+    from app.core.middleware import TenantContextMiddleware
 
     # CORS — restrict to configured origins in production
     app.add_middleware(
@@ -91,7 +92,7 @@ def _register_middleware(app: FastAPI, settings: "Settings") -> None:  # type: i
 
 def _register_routers(app: FastAPI) -> None:
     """Mount all versioned API routers."""
-    from app.api.v1 import router as v1_router  # noqa: PLC0415
+    from app.api.v1 import router as v1_router
 
     app.include_router(v1_router, prefix="/api/v1")
 
@@ -100,11 +101,9 @@ def _register_exception_handlers(app: FastAPI) -> None:
     """Register application-wide exception handlers."""
 
     @app.exception_handler(Exception)
-    async def unhandled_exception_handler(
-        request: Request, exc: Exception
-    ) -> JSONResponse:
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         """Catch-all handler — never leak internal details to the client."""
-        import logging  # noqa: PLC0415
+        import logging
 
         logger = logging.getLogger(__name__)
         logger.exception("Unhandled exception on %s %s", request.method, request.url)
@@ -125,6 +124,7 @@ app = create_app()
 # ---------------------------------------------------------------------------
 # Health check — outside /api/v1 to allow load balancer probes without auth
 # ---------------------------------------------------------------------------
+
 
 @app.get(
     "/health",

@@ -31,12 +31,14 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 
 # Routes that bypass the middleware (no JWT required)
-_EXCLUDED_PATHS: frozenset[str] = frozenset({
-    "/health",
-    "/docs",
-    "/redoc",
-    "/openapi.json",
-})
+_EXCLUDED_PATHS: frozenset[str] = frozenset(
+    {
+        "/health",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+    }
+)
 
 
 class TenantContextMiddleware(BaseHTTPMiddleware):

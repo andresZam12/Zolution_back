@@ -58,6 +58,7 @@ def _require_org_context(user: UserContext) -> UUID:
 # Owner / Staff read endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get(
     "/me",
     response_model=AgentConfigResponse,
@@ -93,6 +94,7 @@ async def get_my_agent_status(
 # ---------------------------------------------------------------------------
 # Owner write endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.put(
     "/me/onboarding",

@@ -14,13 +14,14 @@ To run:
 from __future__ import annotations
 
 import pytest
-
 from fastapi import HTTPException
 
-from app.agents.models import AgentConfig
-from app.agents.schemas import OnboardingAnswers, BusinessHours, ServiceItem
-from app.agents.services import AgentConfigService, _build_system_prompt, _is_onboarding_complete
-from app.tenants.models import Organization
+from app.agents.schemas import BusinessHours, OnboardingAnswers, ServiceItem
+from app.agents.services import (
+    AgentConfigService,
+    _build_system_prompt,
+    _is_onboarding_complete,
+)
 from app.tenants.schemas import OrganizationCreate
 from app.tenants.services import OrganizationService
 
@@ -30,6 +31,7 @@ pytestmark = pytest.mark.asyncio
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def agent_service() -> AgentConfigService:
@@ -79,6 +81,7 @@ async def org_with_config(db_session, org_service):
 # ---------------------------------------------------------------------------
 # Prompt engineering engine — pure function tests (no DB needed)
 # ---------------------------------------------------------------------------
+
 
 class TestBuildSystemPrompt:
     """Tests for the _build_system_prompt() pure function."""
@@ -170,6 +173,7 @@ class TestOnboardingComplete:
 # AgentConfigService — service method tests (with DB)
 # ---------------------------------------------------------------------------
 
+
 async def test_get_status_returns_draft_for_new_org(agent_service, org_with_config, db_session):
     """Newly created organizations should have a draft agent status."""
     status = await agent_service.get_status(org_with_config.id, db_session)
@@ -196,9 +200,7 @@ async def test_generate_system_prompt_succeeds_with_complete_answers(
     agent_service, org_with_config, db_session, minimal_answers
 ):
     """generate_system_prompt populates system_prompt_generated."""
-    await agent_service.update_onboarding_answers(
-        org_with_config.id, minimal_answers, db_session
-    )
+    await agent_service.update_onboarding_answers(org_with_config.id, minimal_answers, db_session)
     await db_session.flush()
 
     config = await agent_service.generate_system_prompt(org_with_config.id, db_session)
@@ -219,9 +221,7 @@ async def test_generate_prompt_raises_400_without_answers(
     assert "onboarding answers are not set" in exc_info.value.detail
 
 
-async def test_activate_raises_400_without_prompt(
-    agent_service, org_with_config, db_session
-):
+async def test_activate_raises_400_without_prompt(agent_service, org_with_config, db_session):
     """activate() raises 400 when no system prompt has been generated."""
     with pytest.raises(HTTPException) as exc_info:
         await agent_service.activate(org_with_config.id, db_session)
@@ -234,9 +234,7 @@ async def test_activate_succeeds_after_prompt_generation(
     agent_service, org_with_config, db_session, minimal_answers
 ):
     """Full happy path: update answers → generate prompt → activate."""
-    await agent_service.update_onboarding_answers(
-        org_with_config.id, minimal_answers, db_session
-    )
+    await agent_service.update_onboarding_answers(org_with_config.id, minimal_answers, db_session)
     await db_session.flush()
 
     await agent_service.generate_system_prompt(org_with_config.id, db_session)

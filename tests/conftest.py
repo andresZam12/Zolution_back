@@ -24,6 +24,8 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.admin import models as _admin_models  # noqa: F401
+from app.agents import models as _agent_models  # noqa: F401
 from app.auth.models import UserContext, UserRole
 from app.core.database import Base
 
@@ -31,8 +33,6 @@ from app.core.database import Base
 # Import all models so SQLAlchemy metadata is populated before create_all()
 # ---------------------------------------------------------------------------
 from app.tenants import models as _tenant_models  # noqa: F401
-from app.agents import models as _agent_models    # noqa: F401
-from app.admin import models as _admin_models     # noqa: F401
 
 # In-memory SQLite for unit tests — no Postgres, no Docker needed
 SQLITE_URL = "sqlite+aiosqlite:///:memory:"
@@ -55,7 +55,7 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
 
     This ensures test isolation without truncating tables between tests.
     """
-    SessionFactory = async_sessionmaker(engine, expire_on_commit=False)
+    async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as conn:
         session = AsyncSession(bind=conn, expire_on_commit=False)
         try:
@@ -68,6 +68,7 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
 # ---------------------------------------------------------------------------
 # UserContext fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def org_id() -> uuid.UUID:

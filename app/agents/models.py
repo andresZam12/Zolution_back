@@ -12,7 +12,10 @@ This allows the onboarding question set to evolve without migrations.
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.tenants.models import Organization
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
@@ -47,9 +50,9 @@ class AgentConfig(Base):
         index=True,
     )
     # The compiled system prompt sent to the LLM on every conversation turn
-    system_prompt_generated: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # noqa: UP007
+    system_prompt_generated: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Raw answers from the onboarding flow — flexible JSONB document
-    onboarding_answers: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # noqa: UP007
+    onboarding_answers: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # LLM provider in use: anthropic | google | openai
     llm_provider: Mapped[str] = mapped_column(String(50), nullable=False, default="anthropic")
     # Specific model name, e.g. "claude-haiku-4-5"
@@ -67,7 +70,7 @@ class AgentConfig(Base):
     )
 
     # Relationships
-    organization: Mapped["Organization"] = relationship(  # type: ignore[name-defined]  # noqa: F821
+    organization: Mapped["Organization"] = relationship(
         "Organization", back_populates="agent_config"
     )
 

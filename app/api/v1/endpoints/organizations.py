@@ -21,7 +21,7 @@ Endpoint summary:
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user, require_superadmin
@@ -34,7 +34,6 @@ from app.tenants.schemas import (
     OrganizationUpdate,
 )
 from app.tenants.services import OrganizationService
-from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/organizations", tags=["Organizations"])
@@ -46,6 +45,7 @@ _service = OrganizationService()
 # ---------------------------------------------------------------------------
 # Owner / Staff endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/me",
@@ -93,6 +93,7 @@ async def update_organization(
 # ---------------------------------------------------------------------------
 # Superadmin endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "",

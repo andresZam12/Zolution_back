@@ -23,8 +23,9 @@ Create Date: 2024-01-01 00:00:00.000000
 from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 # revision identifiers
 revision: str = "20240101_000000"
@@ -144,7 +145,9 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
-    op.create_index("ix_agent_configs_organization_id", "agent_configs", ["organization_id"], unique=True)
+    op.create_index(
+        "ix_agent_configs_organization_id", "agent_configs", ["organization_id"], unique=True
+    )
 
     # -------------------------------------------------------------------------
     # conversations

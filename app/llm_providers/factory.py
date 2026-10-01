@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 # Lazy imports inside the tuples to avoid loading all SDKs at startup
 # ---------------------------------------------------------------------------
 
+
 def _get_anthropic_provider(model: str = "", *, enable_caching: bool = True) -> LLMProvider:
-    from app.llm_providers.anthropic_provider import AnthropicProvider  # noqa: PLC0415
+    from app.llm_providers.anthropic_provider import AnthropicProvider
 
     settings = get_settings()
     api_key = settings.ANTHROPIC_API_KEY
@@ -41,7 +42,7 @@ def _get_anthropic_provider(model: str = "", *, enable_caching: bool = True) -> 
 
 
 def _get_google_provider(model: str = "") -> LLMProvider:
-    from app.llm_providers.google_provider import GoogleProvider  # noqa: PLC0415
+    from app.llm_providers.google_provider import GoogleProvider
 
     settings = get_settings()
     api_key = settings.GOOGLE_API_KEY
@@ -56,7 +57,7 @@ def _get_google_provider(model: str = "") -> LLMProvider:
 
 
 def _get_openai_provider(model: str = "") -> LLMProvider:
-    from app.llm_providers.openai_provider import OpenAIProvider  # noqa: PLC0415
+    from app.llm_providers.openai_provider import OpenAIProvider
 
     settings = get_settings()
     api_key = settings.OPENAI_API_KEY
@@ -84,6 +85,7 @@ SUPPORTED_PROVIDERS = frozenset(_PROVIDER_FACTORIES.keys())
 # Public factory functions
 # ---------------------------------------------------------------------------
 
+
 def get_llm_provider(
     provider_name: str,
     model: str = "",
@@ -110,8 +112,7 @@ def get_llm_provider(
     """
     if provider_name not in _PROVIDER_FACTORIES:
         raise LLMProviderNotConfiguredError(
-            f"Unknown LLM provider: {provider_name!r}. "
-            f"Supported: {sorted(SUPPORTED_PROVIDERS)}",
+            f"Unknown LLM provider: {provider_name!r}. Supported: {sorted(SUPPORTED_PROVIDERS)}",
             provider=provider_name,
         )
 

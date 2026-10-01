@@ -15,7 +15,7 @@ Usage:
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AnyHttpUrl, Field, PostgresDsn, computed_field, model_validator
+from pydantic import AnyHttpUrl, Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,9 +46,7 @@ class Settings(BaseSettings):
     # CORS — comma-separated list of allowed origins
     # In development: ["http://localhost:4200"]
     # In production: the real frontend domain
-    CORS_ORIGINS: list[AnyHttpUrl] = Field(
-        default=["http://localhost:4200"]
-    )
+    CORS_ORIGINS: list[AnyHttpUrl] = Field(default=["http://localhost:4200"])
 
     # -------------------------------------------------------------------------
     # PostgreSQL — individual fields to build the async DSN

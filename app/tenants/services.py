@@ -24,7 +24,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tenants.models import Organization
-from app.tenants.schemas import OrganizationCreate, OrganizationListResponse, OrganizationResponse, OrganizationUpdate
+from app.tenants.schemas import (
+    OrganizationCreate,
+    OrganizationListResponse,
+    OrganizationResponse,
+    OrganizationUpdate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +55,7 @@ class OrganizationService:
         Raises:
             HTTPException 404: Organization not found.
         """
-        result = await db.execute(
-            select(Organization).where(Organization.id == org_id)
-        )
+        result = await db.execute(select(Organization).where(Organization.id == org_id))
         org = result.scalar_one_or_none()
         if org is None:
             raise HTTPException(
@@ -98,9 +101,7 @@ class OrganizationService:
             HTTPException 409: Slug already taken.
         """
         # Check slug uniqueness before insert to provide a clear error
-        existing = await db.execute(
-            select(Organization).where(Organization.slug == data.slug)
-        )
+        existing = await db.execute(select(Organization).where(Organization.slug == data.slug))
         if existing.scalar_one_or_none() is not None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -117,7 +118,9 @@ class OrganizationService:
         await db.flush()  # Flush to get the generated ID without committing
 
         # Create the initial agent config so onboarding can start immediately
-        from app.agents.models import AgentConfig  # noqa: PLC0415 — avoid circular import
+        from app.agents.models import (
+            AgentConfig,
+        )
 
         agent_config = AgentConfig(
             organization_id=org.id,

@@ -11,24 +11,25 @@ and makes the prompt engineering engine type-safe.
 """
 
 from datetime import datetime
-from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-
 
 # ---------------------------------------------------------------------------
 # Onboarding answers — typed representation of JSONB
 # ---------------------------------------------------------------------------
 
+
 class BusinessHours(BaseModel):
     """Operating hours for a single day."""
+
     open: str = Field(description="Opening time in HH:MM format.", examples=["08:00"])
     close: str = Field(description="Closing time in HH:MM format.", examples=["18:00"])
 
 
 class ServiceItem(BaseModel):
     """A single service offered by the business."""
+
     name: str = Field(max_length=200, examples=["Limpieza dental"])
     price_cop: int | None = Field(
         default=None,
@@ -108,6 +109,7 @@ class OnboardingAnswers(BaseModel):
 # Response schemas
 # ---------------------------------------------------------------------------
 
+
 class AgentConfigResponse(BaseModel):
     """Full agent configuration as returned by the API."""
 
@@ -143,4 +145,5 @@ class AgentStatusResponse(BaseModel):
 
 class OnboardingAnswersUpdate(BaseModel):
     """Body for PUT /agents/me/onboarding. Replaces the full answers document."""
+
     answers: OnboardingAnswers

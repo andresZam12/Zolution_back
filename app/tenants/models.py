@@ -15,14 +15,18 @@ Model conventions followed throughout the codebase:
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    # Imported only for type annotations — avoids circular import at runtime.
+    # AgentConfig is defined in app.agents.models and references Organization.
+    from app.agents.models import AgentConfig
 
 from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
     String,
-    Text,
     func,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -65,7 +69,7 @@ class Organization(Base):
 
     # Relationships
     users: Mapped[list["User"]] = relationship("User", back_populates="organization")
-    agent_config: Mapped[Optional["AgentConfig"]] = relationship(  # noqa: UP007
+    agent_config: Mapped[Optional["AgentConfig"]] = relationship(
         "AgentConfig", back_populates="organization", uselist=False
     )
 
@@ -96,7 +100,7 @@ class User(Base):
     # owner | staff | superadmin — matches UserRole enum
     role: Mapped[str] = mapped_column(String(50), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(  # noqa: UP007
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
         nullable=True,
@@ -113,7 +117,7 @@ class User(Base):
     )
 
     # Relationships
-    organization: Mapped[Optional["Organization"]] = relationship(  # noqa: UP007
+    organization: Mapped[Optional["Organization"]] = relationship(
         "Organization", back_populates="users"
     )
 

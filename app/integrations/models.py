@@ -10,7 +10,6 @@ to keep RLS policy checks efficient.
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -42,7 +41,7 @@ class Conversation(Base):
     )
     # Customer's WhatsApp number in E.164 format (e.g. "+573001234567")
     customer_phone: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
-    customer_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # noqa: UP007
+    customer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # active | closed | escalated
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
@@ -96,8 +95,8 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     # Token counts for cost tracking (null for user-side messages)
-    tokens_in: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # noqa: UP007
-    tokens_out: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # noqa: UP007
+    tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

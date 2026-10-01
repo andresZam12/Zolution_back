@@ -11,7 +11,7 @@ Import from here instead of from individual modules to keep coupling low:
 from app.llm_providers.base import ConversationMessage, LLMProvider, LLMResponse
 
 __all__ = [
+    "ConversationMessage",
     "LLMProvider",
     "LLMResponse",
-    "ConversationMessage",
 ]

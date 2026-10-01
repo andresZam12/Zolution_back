@@ -12,7 +12,6 @@ Superadmins can read all entries via the service connection.
 
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import JSON, UUID
@@ -49,7 +48,7 @@ class AuditLog(Base):
         index=True,
     )
     # The organization context of the action (null for platform-wide actions)
-    organization_id: Mapped[Optional[uuid.UUID]] = mapped_column(  # noqa: UP007
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="SET NULL"),
         nullable=True,
@@ -58,15 +57,13 @@ class AuditLog(Base):
     # Human-readable action name, e.g. "impersonate_tenant", "suspend_account"
     action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     # The type of resource acted upon, e.g. "organization", "user", "agent_config"
-    resource_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # noqa: UP007
+    resource_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # The ID of the specific resource (as string to handle different ID types)
-    resource_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # noqa: UP007
+    resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Flexible context: previous values, new values, reason, etc.
-    metadata_: Mapped[Optional[dict]] = mapped_column(  # noqa: UP007
-        "metadata", JSON, nullable=True
-    )
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
     # Requester's IP address for security audit trail
-    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)  # noqa: UP007
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )

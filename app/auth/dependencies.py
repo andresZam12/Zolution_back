@@ -52,7 +52,7 @@ async def _fetch_jwks() -> dict[str, Any]:
     On key rotation (JWKError), callers should clear `_jwks_cache` and
     call this function again.
     """
-    global _jwks_cache  # noqa: PLW0603
+    global _jwks_cache
 
     if _jwks_cache is not None:
         return _jwks_cache
@@ -69,13 +69,14 @@ async def _fetch_jwks() -> dict[str, Any]:
 
 def _clear_jwks_cache() -> None:
     """Clear the JWKS cache to force a re-fetch (called on key rotation)."""
-    global _jwks_cache  # noqa: PLW0603
+    global _jwks_cache
     _jwks_cache = None
 
 
 # ---------------------------------------------------------------------------
 # JWT verification
 # ---------------------------------------------------------------------------
+
 
 async def _verify_token(token: str) -> dict[str, Any]:
     """
@@ -127,6 +128,7 @@ async def _verify_token(token: str) -> dict[str, Any]:
 # Payload → UserContext mapping
 # ---------------------------------------------------------------------------
 
+
 def _extract_user_context(payload: dict[str, Any]) -> UserContext:
     """
     Map a validated JWT payload to a UserContext.
@@ -142,7 +144,7 @@ def _extract_user_context(payload: dict[str, Any]) -> UserContext:
         HTTPException 401: Missing or invalid required claims.
     """
     # Auth0 custom claims must be namespaced to avoid conflicts
-    namespace = f"https://api.zolution.app"
+    namespace = "https://api.zolution.app"
 
     try:
         auth0_id: str = payload["sub"]
@@ -175,6 +177,7 @@ def _extract_user_context(payload: dict[str, Any]) -> UserContext:
 # ---------------------------------------------------------------------------
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
+
 
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),

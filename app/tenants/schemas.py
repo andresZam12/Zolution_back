@@ -17,10 +17,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-
 # ---------------------------------------------------------------------------
 # Request schemas
 # ---------------------------------------------------------------------------
+
 
 class OrganizationCreate(BaseModel):
     """Body for POST /organizations (superadmin creates a new tenant)."""
@@ -74,6 +74,7 @@ class OrganizationUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 # Response schemas
 # ---------------------------------------------------------------------------
+
 
 class OrganizationResponse(BaseModel):
     """Organization resource as returned by the API."""

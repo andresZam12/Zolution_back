@@ -14,11 +14,9 @@ from __future__ import annotations
 import uuid
 
 import pytest
-import pytest_asyncio
 from fastapi import HTTPException
 
 from app.agents.models import AgentConfig
-from app.tenants.models import Organization
 from app.tenants.schemas import OrganizationCreate, OrganizationUpdate
 from app.tenants.services import OrganizationService
 
@@ -44,6 +42,7 @@ def create_data() -> OrganizationCreate:
 # create()
 # ---------------------------------------------------------------------------
 
+
 async def test_create_organization_persists_correctly(service, create_data, db_session):
     """Creating an organization persists name, slug, and plan to the database."""
     org = await service.create(create_data, db_session)
@@ -62,7 +61,7 @@ async def test_create_organization_creates_agent_config(service, create_data, db
 
     This ensures the onboarding flow can start immediately after the org is created.
     """
-    from sqlalchemy import select  # noqa: PLC0415
+    from sqlalchemy import select
 
     org = await service.create(create_data, db_session)
     await db_session.flush()
@@ -93,6 +92,7 @@ async def test_create_organization_raises_on_duplicate_slug(service, create_data
 # get_by_id()
 # ---------------------------------------------------------------------------
 
+
 async def test_get_by_id_returns_organization(service, create_data, db_session):
     """get_by_id returns the correct organization when it exists."""
     org = await service.create(create_data, db_session)
@@ -117,6 +117,7 @@ async def test_get_by_id_raises_404_for_unknown_id(service, db_session):
 # get_for_current_user()
 # ---------------------------------------------------------------------------
 
+
 async def test_get_for_current_user_raises_403_when_no_org(service, db_session):
     """
     Superadmins (organization_id=None) calling get_for_current_user get a 403.
@@ -131,6 +132,7 @@ async def test_get_for_current_user_raises_403_when_no_org(service, db_session):
 # update()
 # ---------------------------------------------------------------------------
 
+
 async def test_update_organization_name(service, create_data, db_session):
     """update() changes the name when provided."""
     org = await service.create(create_data, db_session)
@@ -143,11 +145,9 @@ async def test_update_organization_name(service, create_data, db_session):
     assert updated.slug == "clinica-dental-test"  # slug unchanged
 
 
-async def test_update_organization_raises_409_on_slug_conflict(
-    service, create_data, db_session
-):
+async def test_update_organization_raises_409_on_slug_conflict(service, create_data, db_session):
     """Updating a slug to one already used by another org raises 409."""
-    org1 = await service.create(create_data, db_session)
+    await service.create(create_data, db_session)
     org2_data = OrganizationCreate(name="Otra Clínica", slug="otra-clinica", plan="free")
     org2 = await service.create(org2_data, db_session)
     await db_session.flush()
@@ -161,6 +161,7 @@ async def test_update_organization_raises_409_on_slug_conflict(
 # ---------------------------------------------------------------------------
 # set_status()
 # ---------------------------------------------------------------------------
+
 
 async def test_set_status_suspended(service, create_data, db_session):
     """set_status('suspended') updates the organization status."""

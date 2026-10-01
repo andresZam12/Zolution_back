@@ -54,7 +54,8 @@ class OpenAIProvider(LLMProvider):
         model: str = GPT_4O_MINI,
     ) -> None:
         if not api_key:
-            import os  # noqa: PLC0415
+            import os
+
             api_key = os.getenv("OPENAI_API_KEY", "")
 
         if not api_key:

@@ -20,7 +20,7 @@ Usage:
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import event, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -31,10 +31,10 @@ from sqlalchemy.orm import DeclarativeBase
 
 from app.core.config import get_settings
 
-
 # ---------------------------------------------------------------------------
 # Declarative base — all ORM models inherit from this
 # ---------------------------------------------------------------------------
+
 
 class Base(DeclarativeBase):
     """
@@ -51,15 +51,16 @@ class Base(DeclarativeBase):
 # Engine factory
 # ---------------------------------------------------------------------------
 
+
 def _create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
     """Create a configured async SQLAlchemy engine."""
     return create_async_engine(
         database_url,
-        echo=echo,                  # Log SQL only when DEBUG=True
-        pool_size=10,               # Connections kept open in the pool
-        max_overflow=20,            # Connections beyond pool_size (burst)
-        pool_pre_ping=True,         # Validate connections before use
-        pool_recycle=3600,          # Recycle connections every hour
+        echo=echo,  # Log SQL only when DEBUG=True
+        pool_size=10,  # Connections kept open in the pool
+        max_overflow=20,  # Connections beyond pool_size (burst)
+        pool_pre_ping=True,  # Validate connections before use
+        pool_recycle=3600,  # Recycle connections every hour
     )
 
 
@@ -96,6 +97,7 @@ _SuperadminSessionFactory = async_sessionmaker(
 # ---------------------------------------------------------------------------
 # FastAPI dependencies
 # ---------------------------------------------------------------------------
+
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """

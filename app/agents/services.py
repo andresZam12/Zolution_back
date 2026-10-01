@@ -24,7 +24,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models import AgentConfig
 from app.agents.schemas import AgentStatusResponse, OnboardingAnswers
-from app.tenants.schemas import OrganizationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +123,7 @@ class AgentConfigService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot generate prompt: onboarding answers are not set. "
-                       "Complete the onboarding form first.",
+                "Complete the onboarding form first.",
             )
 
         answers = OnboardingAnswers.model_validate(config.onboarding_answers)
@@ -133,8 +132,8 @@ class AgentConfigService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot generate prompt: onboarding is incomplete. "
-                       "Required fields: business_name, business_type, services (at least 1), "
-                       "hours (at least 1 day), agent_name.",
+                "Required fields: business_name, business_type, services (at least 1), "
+                "hours (at least 1 day), agent_name.",
             )
 
         prompt = _build_system_prompt(answers)
@@ -142,7 +141,8 @@ class AgentConfigService:
         db.add(config)
         logger.info(
             "System prompt generated for org %s (%d chars)",
-            organization_id, len(prompt),
+            organization_id,
+            len(prompt),
         )
         return config
 
@@ -167,7 +167,7 @@ class AgentConfigService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot activate agent: system prompt has not been generated yet. "
-                       "Call POST /agents/me/generate-prompt first.",
+                "Call POST /agents/me/generate-prompt first.",
             )
 
         config.status = "active"
@@ -190,13 +190,13 @@ class AgentConfigService:
         Raises:
             HTTPException 400: Provider not supported.
         """
-        from app.llm_providers.factory import SUPPORTED_PROVIDERS  # noqa: PLC0415
+        from app.llm_providers.factory import SUPPORTED_PROVIDERS
 
         if provider not in SUPPORTED_PROVIDERS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Provider '{provider}' is not supported. "
-                       f"Supported: {sorted(SUPPORTED_PROVIDERS)}",
+                f"Supported: {sorted(SUPPORTED_PROVIDERS)}",
             )
 
         config = await self.get_for_org(organization_id, db)
@@ -210,6 +210,7 @@ class AgentConfigService:
 # ---------------------------------------------------------------------------
 # Prompt engineering engine (Section 6 of project documentation)
 # ---------------------------------------------------------------------------
+
 
 def _is_onboarding_complete(answers: dict) -> bool:
     """
@@ -265,7 +266,7 @@ def _build_hours_block(answers: OnboardingAnswers) -> str:
     lines: list[str] = []
     for day_key, hours in answers.hours.items():
         day_label = day_names.get(day_key, day_key.capitalize())
-        lines.append(f"- {day_label}: {hours.open} – {hours.close}")
+        lines.append(f"- {day_label}: {hours.open} - {hours.close}")
     return "\n".join(lines)
 
 

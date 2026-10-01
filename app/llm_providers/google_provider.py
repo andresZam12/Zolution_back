@@ -22,10 +22,10 @@ from collections.abc import AsyncIterator
 
 import google.generativeai as genai
 from google.api_core.exceptions import (
+    DeadlineExceeded,
     GoogleAPICallError,
     PermissionDenied,
     ResourceExhausted,
-    DeadlineExceeded,
 )
 
 from app.llm_providers.base import ConversationMessage, LLMProvider, LLMResponse
@@ -62,7 +62,8 @@ class GoogleProvider(LLMProvider):
         model: str = GEMINI_2_5_FLASH,
     ) -> None:
         if not api_key:
-            import os  # noqa: PLC0415
+            import os
+
             api_key = os.getenv("GOOGLE_API_KEY", "")
 
         if not api_key:
@@ -133,9 +134,7 @@ class GoogleProvider(LLMProvider):
         """Generate a response using Gemini."""
         model = self._get_model(system_prompt, temperature, max_tokens)
         try:
-            response = await model.generate_content_async(
-                self._to_google_messages(messages)
-            )
+            response = await model.generate_content_async(self._to_google_messages(messages))
         except Exception as exc:
             raise self._map_exception(exc, self.PROVIDER_NAME) from exc
 

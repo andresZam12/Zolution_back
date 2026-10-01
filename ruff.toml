@@ -1,0 +1,45 @@
+# Ruff configuration for Zolution backend
+# https://docs.astral.sh/ruff/configuration/
+# Note: in ruff.toml, sections do NOT use the [tool.ruff] prefix.
+# That prefix is only for pyproject.toml.
+
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    # B008: Do not perform function call in argument defaults.
+    # FastAPI's Depends() / Query() pattern REQUIRES this — intentional.
+    # https://github.com/astral-sh/ruff/issues/2855
+    "B008",
+
+    # UP007: Use X | Y for type unions.
+    # We use Optional[X] in ORM Mapped[] columns for SQLAlchemy compatibility.
+    "UP007",
+
+    # E501: Line too long — handled by the formatter, not the linter.
+    "E501",
+]
+
+[lint.per-file-ignores]
+# Migration files are auto-generated; allow style deviations
+"alembic/versions/*.py" = ["E501", "I001", "F401"]
+
+# Scripts can use local imports and have relaxed rules
+"scripts/*.py" = ["T201", "S101"]
+
+[lint.isort]
+known-first-party = ["app"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
