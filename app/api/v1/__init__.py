@@ -7,13 +7,14 @@ This file only wires routers together — no business logic.
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import organizations
+from app.api.v1.endpoints import agents, organizations
 
 router = APIRouter()
 
 router.include_router(organizations.router)
+router.include_router(agents.router)
 
 # Future routers will be registered here, e.g.:
-# from app.api.v1.endpoints import agents, conversations
-# router.include_router(agents.router)
+# from app.api.v1.endpoints import conversations, webhooks
+# router.include_router(conversations.router)
 
