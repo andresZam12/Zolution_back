@@ -59,6 +59,10 @@ class AgentConfig(Base):
     llm_model: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     # Agent lifecycle: draft | active | suspended
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="draft")
+    # Meta WhatsApp Business Account mapping (the phone number ID that receives messages)
+    whatsapp_phone_number_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
