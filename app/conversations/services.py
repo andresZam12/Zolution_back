@@ -3,6 +3,7 @@ Conversation service layer.
 """
 
 import logging
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -10,8 +11,8 @@ from sqlalchemy.orm import selectinload
 from app.agents.models import AgentConfig
 from app.conversations.models import Conversation, Message
 from app.integrations.whatsapp.client import WhatsAppClient
-from app.llm_providers.factory import LLMProviderFactory
 from app.llm_providers.base import ConversationMessage
+from app.llm_providers.factory import LLMProviderFactory
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,11 @@ class ConversationService:
         return conversation
 
     async def process_incoming_message(
-        self, phone_number_id: str, customer_phone: str, text_content: str, customer_name: str | None
+        self,
+        phone_number_id: str,
+        customer_phone: str,
+        text_content: str,
+        customer_name: str | None,
     ) -> None:
         """
         Main entrypoint for processing an incoming message.
@@ -97,8 +102,7 @@ class ConversationService:
         # 4. Prepare messages for LLM
         # Map our DB messages to the ConversationMessage objects expected by the LLM Provider
         llm_messages = [
-            ConversationMessage(role=m.role, content=m.content)
-            for m in conversation.messages
+            ConversationMessage(role=m.role, content=m.content) for m in conversation.messages
         ]
 
         # 5. Call the LLM
@@ -112,7 +116,9 @@ class ConversationService:
         except Exception as e:
             logger.error(f"Error calling LLM provider: {e}")
             # Fallback message
-            fallback_text = "I'm having a technical issue right now. Please try again in a few minutes."
+            fallback_text = (
+                "I'm having a technical issue right now. Please try again in a few minutes."
+            )
             llm_response_content = fallback_text
             tokens_in, tokens_out = None, None
         else:
