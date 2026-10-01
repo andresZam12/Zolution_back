@@ -2,6 +2,9 @@
 Shared pytest fixtures for the Zolution backend test suite.
 
 Key design decisions:
+- `APP_ENV=test` is set via os.environ BEFORE any app imports so that
+  `get_settings()` (which is called at module-level in database.py)
+  receives the correct env value on first call.
 - Tests use an in-memory SQLite database (via aiosqlite) so they run
   without a PostgreSQL instance. No Docker required for unit tests.
 - All SQLAlchemy models are created fresh per test session, then
@@ -17,22 +20,34 @@ Running tests:
 
 from __future__ import annotations
 
+# ---------------------------------------------------------------------------
+# CRITICAL: set APP_ENV before any app imports so that get_settings() (called
+# eagerly in database.py at module level) picks up "test" as the environment.
+# Config defaults for SECRET_KEY / AUTH0_DOMAIN / AUTH0_AUDIENCE are used
+# when not explicitly set — see app/core/config.py.
+# ---------------------------------------------------------------------------
+import os
+
+os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("DATABASE_PASSWORD", "test_password")
+
 import uuid
 from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.admin import models as _admin_models  # noqa: F401
-from app.agents import models as _agent_models  # noqa: F401
-from app.auth.models import UserContext, UserRole
-from app.core.database import Base
+# Clear the lru_cache so get_settings() re-reads our env vars above
+from app.core.config import get_settings
 
-# ---------------------------------------------------------------------------
-# Import all models so SQLAlchemy metadata is populated before create_all()
-# ---------------------------------------------------------------------------
-from app.tenants import models as _tenant_models  # noqa: F401
+get_settings.cache_clear()
+
+from app.admin import models as _admin_models  # noqa: E402, F401
+from app.agents import models as _agent_models  # noqa: E402, F401
+from app.auth.models import UserContext, UserRole  # noqa: E402
+from app.core.database import Base  # noqa: E402
+from app.tenants import models as _tenant_models  # noqa: E402, F401
 
 # In-memory SQLite for unit tests — no Postgres, no Docker needed
 SQLITE_URL = "sqlite+aiosqlite:///:memory:"
@@ -55,7 +70,6 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
 
     This ensures test isolation without truncating tables between tests.
     """
-    async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as conn:
         session = AsyncSession(bind=conn, expire_on_commit=False)
         try:

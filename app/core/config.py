@@ -38,10 +38,15 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Application
     # -------------------------------------------------------------------------
-    APP_ENV: Literal["development", "staging", "production"] = "development"
+    APP_ENV: Literal["development", "staging", "production", "test"] = "development"
     DEBUG: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
-    SECRET_KEY: str = Field(min_length=32)
+    # In test environments, SECRET_KEY defaults to a dummy value.
+    # The production validator enforces a minimum length of 64 chars.
+    SECRET_KEY: str = Field(
+        default="test-only-secret-key-not-for-production-use-at-all",
+        min_length=32,
+    )
 
     # CORS — comma-separated list of allowed origins
     # In development: ["http://localhost:4200"]
@@ -82,8 +87,10 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Auth0
     # -------------------------------------------------------------------------
-    AUTH0_DOMAIN: str
-    AUTH0_AUDIENCE: str
+    # Defaults allow unit tests to run without real Auth0 credentials.
+    # These values are NEVER used in production (validator enforces real values).
+    AUTH0_DOMAIN: str = "test.auth0.example.com"
+    AUTH0_AUDIENCE: str = "https://test.api.zolution.app"
     AUTH0_ALGORITHMS: list[str] = ["RS256"]
 
     @computed_field  # type: ignore[prop-decorator]
@@ -128,6 +135,10 @@ class Settings(BaseSettings):
                 raise ValueError("DEBUG must be False in production")
             if not self.SECRET_KEY or len(self.SECRET_KEY) < 64:
                 raise ValueError("SECRET_KEY must be at least 64 characters in production")
+            if "example.com" in self.AUTH0_DOMAIN or "test" in self.AUTH0_DOMAIN:
+                raise ValueError("AUTH0_DOMAIN must be a real Auth0 domain in production")
+            if "test" in self.AUTH0_AUDIENCE:
+                raise ValueError("AUTH0_AUDIENCE must be a real audience in production")
         return self
 
 
