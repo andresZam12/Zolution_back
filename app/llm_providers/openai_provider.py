@@ -104,15 +104,21 @@ class OpenAIProvider(LLMProvider):
         *,
         temperature: float = 0.3,
         max_tokens: int = 500,
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         """Generate a response using GPT."""
+        kwargs = {
+            "model": self._model,
+            "messages": self._build_messages(system_prompt, messages),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
         try:
-            response = await self._client.chat.completions.create(
-                model=self._model,
-                messages=self._build_messages(system_prompt, messages),  # type: ignore[arg-type]
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            response = await self._client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
         except openai.OpenAIError as exc:
             raise self._map_exception(exc, self.PROVIDER_NAME) from exc
 
@@ -133,6 +139,20 @@ class OpenAIProvider(LLMProvider):
             usage.completion_tokens if usage else 0,
         )
 
+        tool_calls = None
+        if choice.message.tool_calls:
+            tool_calls = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in choice.message.tool_calls
+            ]
+
         return LLMResponse(
             content=choice.message.content or "",
             input_tokens=usage.prompt_tokens if usage else 0,
@@ -140,6 +160,7 @@ class OpenAIProvider(LLMProvider):
             provider=self.PROVIDER_NAME,
             model=self._model,
             cached_tokens=0,
+            tool_calls=tool_calls,
         )
 
     async def stream(
@@ -149,16 +170,22 @@ class OpenAIProvider(LLMProvider):
         *,
         temperature: float = 0.3,
         max_tokens: int = 500,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[str]:
         """Stream GPT's response token by token."""
+        kwargs = {
+            "model": self._model,
+            "messages": self._build_messages(system_prompt, messages),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
         try:
-            async with await self._client.chat.completions.create(
-                model=self._model,
-                messages=self._build_messages(system_prompt, messages),  # type: ignore[arg-type]
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-            ) as stream:
+            async with await self._client.chat.completions.create(**kwargs) as stream:  # type: ignore[arg-type]
                 async for chunk in stream:
                     delta = chunk.choices[0].delta
                     if delta.content:

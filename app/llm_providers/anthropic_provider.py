@@ -125,8 +125,12 @@ class AnthropicProvider(LLMProvider):
         *,
         temperature: float = 0.3,
         max_tokens: int = 500,
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         """Generate a response using Claude, with prompt caching on the system prompt."""
+        if tools:
+            logger.warning("Tool calling not yet implemented for Anthropic in this MVP.")
+
         try:
             response = await self._client.messages.create(
                 model=self._model,
@@ -166,8 +170,12 @@ class AnthropicProvider(LLMProvider):
         *,
         temperature: float = 0.3,
         max_tokens: int = 500,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[str]:
         """Stream Claude's response token by token."""
+        if tools:
+            logger.warning("Tool calling not yet implemented for Anthropic in this MVP.")
+
         try:
             async with self._client.messages.stream(
                 model=self._model,

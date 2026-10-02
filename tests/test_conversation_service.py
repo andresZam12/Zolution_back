@@ -26,11 +26,12 @@ def mock_llm_factory():
 
         # Define a mock response object matching the expected structure
         class MockResponse:
-            text = "Hello from AI"
-            tokens_in = 10
-            tokens_out = 5
+            content = "Hello from AI"
+            input_tokens = 10
+            output_tokens = 5
+            tool_calls = None
 
-        provider_instance.generate_response.return_value = MockResponse()
+        provider_instance.generate.return_value = MockResponse()
         factory_instance.get_provider.return_value = provider_instance
         yield factory_instance
 
@@ -92,4 +93,4 @@ async def test_process_incoming_message_creates_conversation(
 
     # 3. Verify LLM Provider was called
     mock_provider = mock_llm_factory.get_provider.return_value
-    mock_provider.generate_response.assert_called_once()
+    mock_provider.generate.assert_called_once()

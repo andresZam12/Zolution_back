@@ -130,8 +130,12 @@ class GoogleProvider(LLMProvider):
         *,
         temperature: float = 0.3,
         max_tokens: int = 500,
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         """Generate a response using Gemini."""
+        if tools:
+            logger.warning("Tool calling not yet implemented for Gemini in this MVP.")
+
         model = self._get_model(system_prompt, temperature, max_tokens)
         try:
             response = await model.generate_content_async(self._to_google_messages(messages))
@@ -169,8 +173,12 @@ class GoogleProvider(LLMProvider):
         *,
         temperature: float = 0.3,
         max_tokens: int = 500,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[str]:
         """Stream Gemini's response chunk by chunk."""
+        if tools:
+            logger.warning("Tool calling not yet implemented for Gemini in this MVP.")
+
         model = self._get_model(system_prompt, temperature, max_tokens)
         try:
             async for chunk in await model.generate_content_async(

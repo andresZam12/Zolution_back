@@ -36,12 +36,17 @@ class ConversationMessage:
         content: Plain-text message content.
     """
 
-    role: Literal["user", "assistant"]
+    role: Literal["user", "assistant", "tool"]
     content: str
+    tool_calls: list[dict] | None = None  # For assistant messages that invoke tools
+    tool_call_id: str | None = None  # For tool role messages
+    name: str | None = None  # For tool role messages
 
     def __post_init__(self) -> None:
-        if not self.content.strip():
-            raise ValueError("ConversationMessage content cannot be empty.")
+        if not self.content.strip() and not self.tool_calls:
+            raise ValueError(
+                "ConversationMessage content cannot be empty unless it has tool_calls."
+            )
 
 
 @dataclass(frozen=True)
@@ -68,6 +73,7 @@ class LLMResponse:
     provider: str
     model: str
     cached_tokens: int = field(default=0)
+    tool_calls: list[dict] | None = field(default=None)
 
     @property
     def total_tokens(self) -> int:
@@ -114,6 +120,7 @@ class LLMProvider(ABC):
         *,
         temperature: float = 0.3,
         max_tokens: int = 500,
+        tools: list[dict] | None = None,
     ) -> LLMResponse:
         """
         Generate a response from the LLM.
@@ -144,6 +151,7 @@ class LLMProvider(ABC):
         *,
         temperature: float = 0.3,
         max_tokens: int = 500,
+        tools: list[dict] | None = None,
     ) -> AsyncIterator[str]:
         """
         Stream the LLM response token by token.

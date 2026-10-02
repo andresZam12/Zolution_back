@@ -2,11 +2,11 @@
 Google Calendar integration service.
 """
 
-import httpx
 from datetime import datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession
+import httpx
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations.models import IntegrationCredential
 
@@ -33,7 +33,7 @@ class GoogleCalendarService:
         )
         result = await self.db.execute(stmt)
         cred = result.scalar_one_or_none()
-        
+
         if not cred:
             raise ValueError("Google integration not connected.")
 
@@ -48,7 +48,7 @@ class GoogleCalendarService:
         Check the primary calendar's free/busy status for a given date (YYYY-MM-DD).
         """
         token = await self._get_access_token()
-        
+
         try:
             date_obj = datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
@@ -56,21 +56,17 @@ class GoogleCalendarService:
 
         time_min = date_obj.isoformat() + "Z"
         time_max = (date_obj + timedelta(days=1)).isoformat() + "Z"
-        
+
         url = "https://www.googleapis.com/calendar/v3/freeBusy"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        data = {
-            "timeMin": time_min,
-            "timeMax": time_max,
-            "items": [{"id": "primary"}]
-        }
+        data = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": "primary"}]}
 
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=data)
-            
+
             if response.status_code != 200:
                 return "Failed to fetch calendar availability."
 
@@ -86,7 +82,7 @@ class GoogleCalendarService:
         start_time and end_time should be ISO8601 strings (e.g. 2026-10-02T10:00:00Z).
         """
         token = await self._get_access_token()
-        
+
         url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
         headers = {
             "Authorization": f"Bearer {token}",
@@ -105,7 +101,7 @@ class GoogleCalendarService:
 
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=data)
-            
+
             if response.status_code == 200:
                 event = response.json()
                 return f"Appointment successfully scheduled! Calendar Link: {event.get('htmlLink')}"

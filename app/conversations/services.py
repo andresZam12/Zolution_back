@@ -106,15 +106,76 @@ class ConversationService:
         ]
 
         # 5. Call the LLM
+        from app.integrations.google.calendar import GoogleCalendarService
+        from app.llm_providers.tools import AVAILABLE_TOOLS
+
         try:
             provider = self.llm_factory.get_provider(
                 agent_config.llm_provider,
                 agent_config.llm_model,
                 agent_config.system_prompt_generated or "",
             )
-            llm_response = await provider.generate_response(llm_messages)
+            llm_response = await provider.generate(
+                system_prompt=agent_config.system_prompt_generated or "",
+                messages=llm_messages,
+                tools=AVAILABLE_TOOLS,
+            )
+
+            # If the LLM requested a tool call, execute it
+            if getattr(llm_response, "tool_calls", None):
+                # We only process the first tool call in this MVP for simplicity
+                tool_call = llm_response.tool_calls[0]
+                function_name = tool_call["function"]["name"]
+                arguments = tool_call["function"].get("arguments", "{}")
+                import json
+
+                logger.info(f"LLM requested tool call: {function_name} with args {arguments}")
+
+                try:
+                    args_dict = json.loads(arguments) if isinstance(arguments, str) else arguments
+                except json.JSONDecodeError:
+                    args_dict = {}
+
+                calendar_service = GoogleCalendarService(self.db, organization_id)
+                tool_result = "Tool execution failed."
+
+                try:
+                    if function_name == "check_availability":
+                        date_str = args_dict.get("date")
+                        if date_str:
+                            tool_result = await calendar_service.get_availability(date_str)
+                    elif function_name == "book_appointment":
+                        tool_result = await calendar_service.create_appointment(
+                            customer_name=args_dict.get("customer_name", ""),
+                            customer_phone=args_dict.get("customer_phone", ""),
+                            start_time=args_dict.get("start_time", ""),
+                            end_time=args_dict.get("end_time", ""),
+                        )
+                except Exception as e:
+                    logger.error(f"Error executing tool {function_name}: {e}")
+                    tool_result = f"Error: {e}"
+
+                # Append assistant's tool call request and the tool's result to the history
+                llm_messages.append(
+                    ConversationMessage(role="assistant", content="", tool_calls=[tool_call])
+                )
+                llm_messages.append(
+                    ConversationMessage(
+                        role="tool",
+                        content=tool_result,
+                        tool_call_id=tool_call["id"],
+                        name=function_name,
+                    )
+                )
+
+                # Call LLM again to get the final text response
+                llm_response = await provider.generate(
+                    system_prompt=agent_config.system_prompt_generated or "",
+                    messages=llm_messages,
+                )
+
         except Exception as e:
-            logger.error(f"Error calling LLM provider: {e}")
+            logger.exception(f"Error calling LLM provider: {e}")
             # Fallback message
             fallback_text = (
                 "I'm having a technical issue right now. Please try again in a few minutes."
@@ -122,9 +183,9 @@ class ConversationService:
             llm_response_content = fallback_text
             tokens_in, tokens_out = None, None
         else:
-            llm_response_content = llm_response.text
-            tokens_in = llm_response.tokens_in
-            tokens_out = llm_response.tokens_out
+            llm_response_content = llm_response.content
+            tokens_in = llm_response.input_tokens
+            tokens_out = llm_response.output_tokens
 
         # 6. Save the assistant response
         assistant_message = Message(
