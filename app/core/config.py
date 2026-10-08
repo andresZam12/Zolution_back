@@ -49,23 +49,35 @@ class Settings(BaseSettings):
     )
 
     # CORS — comma-separated list of allowed origins
-    # In development: ["http://localhost:4200"]
-    # In production: the real frontend domain
-    CORS_ORIGINS: list[AnyHttpUrl] = Field(default=["http://localhost:4200"])
+    # In development: ["http://localhost:3000", "http://localhost:4200"]
+    # In production: real frontend domain (e.g. Vercel)
+    CORS_ORIGINS: list[str] = Field(
+        default=["http://localhost:3000", "http://localhost:4200", "*"]
+    )
 
     # -------------------------------------------------------------------------
-    # PostgreSQL — individual fields to build the async DSN
+    # PostgreSQL — individual fields or direct cloud DSN
     # -------------------------------------------------------------------------
     DATABASE_HOST: str = "localhost"
     DATABASE_PORT: int = 5432
     DATABASE_NAME: str = "zolution"
     DATABASE_USER: str = "zolution"
-    DATABASE_PASSWORD: str
+    DATABASE_PASSWORD: str = "zolution"
+
+    # Direct database URL override (used by Render, Railway, Supabase)
+    DIRECT_DATABASE_URL: str = Field(default="", validation_alias="DATABASE_URL")
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def DATABASE_URL(self) -> str:
-        """Async PostgreSQL DSN assembled from individual fields."""
+        """Async PostgreSQL DSN assembled from individual fields or cloud URL."""
+        if self.DIRECT_DATABASE_URL:
+            url = self.DIRECT_DATABASE_URL
+            if url.startswith("postgres://"):
+                url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
+                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+            return url
         return (
             f"postgresql+asyncpg://{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
             f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
@@ -74,13 +86,23 @@ class Settings(BaseSettings):
     # Superadmin DB connection (bypasses RLS — never expose to frontend)
     SUPERADMIN_DB_USER: str = "zolution_admin"
     SUPERADMIN_DB_PASSWORD: str = ""
+    DIRECT_SUPERADMIN_DATABASE_URL: str = ""
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def SUPERADMIN_DATABASE_URL(self) -> str:
         """Async PostgreSQL DSN for the superadmin service connection."""
+        if self.DIRECT_SUPERADMIN_DATABASE_URL:
+            url = self.DIRECT_SUPERADMIN_DATABASE_URL
+            if url.startswith("postgres://"):
+                url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+            elif url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
+                url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+            return url
+        user = self.SUPERADMIN_DB_USER or self.DATABASE_USER
+        password = self.SUPERADMIN_DB_PASSWORD or self.DATABASE_PASSWORD
         return (
-            f"postgresql+asyncpg://{self.SUPERADMIN_DB_USER}:{self.SUPERADMIN_DB_PASSWORD}"
+            f"postgresql+asyncpg://{user}:{password}"
             f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
         )
 

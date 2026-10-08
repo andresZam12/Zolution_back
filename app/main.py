@@ -83,7 +83,7 @@ def _register_middleware(app: FastAPI, settings: "Settings") -> None:  # type: i
         allow_origins=settings.CORS_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["*"],
     )
 
     # Tenant context — sets organization_id on DB session from JWT
