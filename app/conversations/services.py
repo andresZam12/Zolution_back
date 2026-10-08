@@ -208,3 +208,51 @@ class ConversationService:
             )
         except Exception as e:
             logger.error(f"Failed to send WhatsApp message: {e}")
+
+    async def list_conversations(
+        self, organization_id: str, page: int = 1, page_size: int = 20
+    ) -> tuple[list[Conversation], int]:
+        """
+        List conversations for an organization with pagination and their latest message.
+        """
+        from sqlalchemy import func
+
+        offset = (page - 1) * page_size
+
+        # Count total
+        count_stmt = select(func.count(Conversation.id)).where(
+            Conversation.organization_id == organization_id
+        )
+        count_res = await self.db.execute(count_stmt)
+        total = count_res.scalar_one()
+
+        # Fetch page with eager loaded messages
+        stmt = (
+            select(Conversation)
+            .where(Conversation.organization_id == organization_id)
+            .options(selectinload(Conversation.messages))
+            .order_by(Conversation.updated_at.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
+        result = await self.db.execute(stmt)
+        conversations = list(result.scalars().all())
+
+        return conversations, total
+
+    async def get_conversation(
+        self, organization_id: str, conversation_id: str
+    ) -> Conversation | None:
+        """
+        Retrieve a specific conversation with all its messages.
+        """
+        stmt = (
+            select(Conversation)
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.organization_id == organization_id,
+            )
+            .options(selectinload(Conversation.messages))
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
