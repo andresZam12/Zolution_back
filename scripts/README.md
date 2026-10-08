@@ -84,3 +84,35 @@ python scripts/llm_diagnostic.py --provider anthropic
 
 Compare the new `diagnostic_<timestamp>.json` against the baseline to verify
 no previously passing guardrails broke.
+
+---
+
+## seed_data.py — Multi-Industry Database Seeder
+
+Populates the PostgreSQL database with demo tenants across multiple sectors:
+- **Lex & Co. Asesoría Legal** (`lex-asesores`): Consultoría jurídica y revisión contractual.
+- **NexTech Soluciones Cloud** (`nextech-cloud`): Infraestructura TI, DevOps y Cloud.
+- **Clínica Dental & Estética Santa María** (`dra-garcia-dental`): Salud y odontología.
+- **Luxe Wellness & Spa** (`luxe-spa`): Spa, bienestar y cuidado personal.
+
+### Usage
+
+```bash
+cd backend/
+python -m scripts.seed_data
+```
+
+---
+
+## smoke_test.py — End-to-End API Smoke Tests
+
+Validates `/health`, `/openapi.json`, and multi-tenant header propagation for multiple business sectors.
+
+### Usage
+
+```bash
+cd backend/
+python -m scripts.smoke_test --base-url http://localhost:8000
+```
+
+
