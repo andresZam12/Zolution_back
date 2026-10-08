@@ -40,6 +40,7 @@ from app.integrations import models as _integration_models  # noqa: F401
 # Add new model modules here as they are created.
 # fmt: off
 from app.tenants import models as _tenant_models  # noqa: F401
+from app.conversations import models as _conversation_models  # noqa: F401
 
 # fmt: on
 
