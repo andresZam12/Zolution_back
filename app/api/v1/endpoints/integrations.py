@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user
+from app.auth.dependencies import get_current_user
 from app.core.database import get_db_session
 from app.integrations.google.auth import GoogleOAuthService
 from app.integrations.models import IntegrationCredential
