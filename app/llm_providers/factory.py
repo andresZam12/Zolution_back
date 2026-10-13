@@ -151,3 +151,19 @@ def get_provider_for_agent(
         response = await provider.generate(agent_config.system_prompt_generated, messages)
     """
     return get_llm_provider(llm_provider, model=llm_model, enable_caching=True)
+
+
+class LLMProviderFactory:
+    """Factory class for instantiating LLM providers."""
+
+    def get_provider(
+        self,
+        provider_name: str,
+        model: str = "",
+        system_prompt: str = "",
+        *,
+        enable_caching: bool = True,
+    ) -> LLMProvider:
+        """Return a configured LLMProvider instance."""
+        return get_llm_provider(provider_name, model=model, enable_caching=enable_caching)
+
