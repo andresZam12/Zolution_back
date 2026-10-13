@@ -86,6 +86,8 @@ AsyncSessionFactory = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,  # Avoid implicit lazy loads after commit
 )
+AsyncSessionLocal = AsyncSessionFactory
+
 
 _SuperadminSessionFactory = async_sessionmaker(
     bind=_superadmin_engine,
