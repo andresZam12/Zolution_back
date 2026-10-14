@@ -83,8 +83,6 @@ class User(Base):
 
     `organization_id` is nullable: superadmin users have no organization.
     The `role` column maps directly to `UserRole` in app/auth/models.py.
-    `auth0_id` is the Auth0 `sub` claim (e.g. "auth0|abc123") used to
-    look up the user after JWT verification.
     """
 
     __tablename__ = "users"
@@ -94,12 +92,15 @@ class User(Base):
         primary_key=True,
         server_default=func.gen_random_uuid(),
     )
-    # Auth0 subject identifier — indexed for fast JWT → user lookup
-    auth0_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    # Auth0 subject identifier — nullable for native email / Google logins
+    auth0_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    google_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # owner | staff | superadmin — matches UserRole enum
-    role: Mapped[str] = mapped_column(String(50), nullable=False)
+    role: Mapped[str] = mapped_column(String(50), nullable=False, default="owner")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("organizations.id", ondelete="CASCADE"),
@@ -123,3 +124,29 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email!r} role={self.role!r}>"
+
+
+class VerificationCode(Base):
+    """
+    Temporary one-time verification codes (OTP) sent to email for authentication
+    and user verification.
+    """
+
+    __tablename__ = "verification_codes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    code: Mapped[str] = mapped_column(String(10), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(50), nullable=False, default="registration")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<VerificationCode email={self.email!r} code={self.code!r} used={self.is_used}>"

@@ -145,6 +145,16 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/integrations/google-calendar/callback"
 
     # -------------------------------------------------------------------------
+    # Email Service (Resend or SMTP)
+    # -------------------------------------------------------------------------
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM: str = "Zolution <onboarding@resend.dev>"
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+
+    # -------------------------------------------------------------------------
     # Validation
     # -------------------------------------------------------------------------
     @model_validator(mode="after")

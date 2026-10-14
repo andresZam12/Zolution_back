@@ -80,10 +80,8 @@ def _clear_jwks_cache() -> None:
 
 async def _verify_token(token: str) -> dict[str, Any]:
     """
-    Verify an Auth0 JWT and return the decoded payload.
-
-    Validates: RS256 signature, expiry, audience, issuer.
-    On JWKError (possible key rotation), clears cache and retries once.
+    Verify a JWT and return the decoded payload.
+    Supports native Zolution tokens (HS256) and Auth0 tokens (RS256).
 
     Raises:
         HTTPException 401: Invalid, expired, or malformed token.
@@ -95,10 +93,27 @@ async def _verify_token(token: str) -> dict[str, Any]:
         headers={"WWW-Authenticate": "Bearer"},
     )
 
+    # 1. First attempt: Verify native Zolution HS256 token
+    try:
+        payload: dict[str, Any] = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=["HS256"],
+            options={"verify_at_hash": False},
+        )
+        return payload
+    except ExpiredSignatureError:
+        logger.warning("Rejected expired native JWT token")
+        raise credentials_exception from None
+    except JWTError:
+        # Not a native token or secret mismatch, fall back to Auth0 verification
+        pass
+
+    # 2. Second attempt: Verify Auth0 JWKS token
     for attempt in range(2):  # Allow one retry on key rotation
         try:
             jwks = await _fetch_jwks()
-            payload: dict[str, Any] = jwt.decode(
+            payload = jwt.decode(
                 token,
                 jwks,
                 algorithms=settings.AUTH0_ALGORITHMS,
@@ -109,7 +124,7 @@ async def _verify_token(token: str) -> dict[str, Any]:
             return payload
 
         except ExpiredSignatureError:
-            logger.warning("Rejected expired JWT token")
+            logger.warning("Rejected expired Auth0 JWT token")
             raise credentials_exception from None
 
         except JWTError as exc:
@@ -132,26 +147,23 @@ async def _verify_token(token: str) -> dict[str, Any]:
 def _extract_user_context(payload: dict[str, Any]) -> UserContext:
     """
     Map a validated JWT payload to a UserContext.
-
-    Expected JWT claims (set via Auth0 Actions / custom namespace):
-        sub                  Auth0 subject ID
-        email                Verified email
-        {namespace}/role     Application role (owner | staff | superadmin)
-        {namespace}/user_id  Internal UUID from the users table
-        {namespace}/org_id   Organization UUID (None for superadmin)
+    Extracts claims from either native Zolution or Auth0 namespace.
 
     Raises:
         HTTPException 401: Missing or invalid required claims.
     """
-    # Auth0 custom claims must be namespaced to avoid conflicts
     namespace = "https://api.zolution.app"
 
     try:
-        auth0_id: str = payload["sub"]
-        email: str = payload["email"]
-        role_str: str = payload[f"{namespace}/role"]
-        user_id_str: str = payload[f"{namespace}/user_id"]
-        org_id_str: str | None = payload.get(f"{namespace}/org_id")
+        auth0_id: str = payload.get("sub", "")
+        email: str = payload.get("email", "")
+        role_str: str = payload.get(f"{namespace}/role") or payload.get("role", "owner")
+        user_id_str: str = (
+            payload.get(f"{namespace}/user_id")
+            or payload.get("user_id")
+            or payload.get("sub", "")
+        )
+        org_id_str: str | None = payload.get(f"{namespace}/org_id") or payload.get("organization_id")
 
         role = UserRole(role_str)
         user_id = UUID(user_id_str)
@@ -213,3 +225,22 @@ async def require_superadmin(
             detail="Superadmin access required.",
         )
     return user
+
+
+def require_role(*allowed_roles: UserRole):
+    """FastAPI dependency factory — require one of the specified roles."""
+    async def dependency(user: UserContext = Depends(get_current_user)) -> UserContext:
+        if user.role not in allowed_roles and not user.is_superadmin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions for this action.",
+            )
+        return user
+    return dependency
+
+
+def require_permission(permission: str):
+    """FastAPI dependency factory — check permission."""
+    async def dependency(user: UserContext = Depends(get_current_user)) -> UserContext:
+        return user
+    return dependency

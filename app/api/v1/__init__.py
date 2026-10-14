@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     agents,
     appointments,
+    auth,
     conversations,
     integrations,
     organizations,
@@ -18,6 +19,7 @@ from app.api.v1.endpoints import (
 
 router = APIRouter()
 
+router.include_router(auth.router)
 router.include_router(organizations.router)
 router.include_router(agents.router)
 router.include_router(conversations.router)
