@@ -19,14 +19,19 @@ Endpoint summary:
 """
 
 import logging
+import re
+import uuid
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_user, require_superadmin
 from app.auth.models import UserContext, UserRole
 from app.core.database import get_db_session
+from app.tenants.models import Organization
 from app.tenants.schemas import (
     OrganizationCreate,
     OrganizationListResponse,
@@ -40,6 +45,51 @@ router = APIRouter(prefix="/organizations", tags=["Organizations"])
 
 # Shared service instance (stateless — safe to share)
 _service = OrganizationService()
+
+
+class OrganizationRegisterRequest(BaseModel):
+    """Payload for self-service tenant onboarding."""
+
+    name: str = Field(..., min_length=2, max_length=255, description="Business display name")
+    email: str = Field(..., description="Owner email address")
+    industry: str = Field(default="Servicios Profesionales", description="Business industry")
+    slug: str | None = Field(default=None, description="Optional custom URL-safe slug")
+
+
+@router.post(
+    "/register",
+    response_model=OrganizationResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Public self-service organization registration",
+)
+async def register_organization(
+    payload: OrganizationRegisterRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> OrganizationResponse:
+    """Create a new tenant organization and provision its initial agent configuration."""
+    raw_slug = payload.slug or payload.name.lower().strip()
+    clean_slug = re.sub(r"[^a-z0-9]+", "-", raw_slug).strip("-")
+    if not clean_slug:
+        clean_slug = f"org-{uuid.uuid4().hex[:6]}"
+
+    # Ensure uniqueness
+    base_slug = clean_slug
+    idx = 1
+    while True:
+        existing = await db.execute(select(Organization).where(Organization.slug == clean_slug))
+        if existing.scalar_one_or_none() is None:
+            break
+        clean_slug = f"{base_slug}-{idx}"
+        idx += 1
+
+    create_data = OrganizationCreate(
+        name=payload.name,
+        slug=clean_slug,
+        plan="starter",
+    )
+    org = await _service.create(create_data, db)
+    return OrganizationResponse.model_validate(org)
+
 
 
 # ---------------------------------------------------------------------------
