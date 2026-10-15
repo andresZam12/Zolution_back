@@ -33,6 +33,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",  # Ignore unexpected env vars (e.g. from CI)
+        str_strip_whitespace=True,
     )
 
     # -------------------------------------------------------------------------

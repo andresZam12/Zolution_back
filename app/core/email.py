@@ -111,12 +111,12 @@ async def send_verification_email(
     last_error = "No hay proveedores de correo configurados."
 
     # 1. Try SMTP if configured (Allows sending to ANY recipient in the world without domain restrictions)
-    if settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD:
+    if settings.SMTP_HOST.strip() and settings.SMTP_USER.strip() and settings.SMTP_PASSWORD.strip():
         try:
             await asyncio.to_thread(
                 _send_smtp_sync, settings, to_email, subject, plain_content, html_content
             )
-            logger.info("Verification email sent via SMTP (%s) to %s", settings.SMTP_HOST, to_email)
+            logger.info("Verification email sent via SMTP (%s) to %s", settings.SMTP_HOST.strip(), to_email)
             return True, "Enviado exitosamente vía SMTP."
         except Exception as exc:
             last_error = f"SMTP error ({settings.SMTP_HOST.strip()}): {exc}"
