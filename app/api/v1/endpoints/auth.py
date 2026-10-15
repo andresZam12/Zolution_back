@@ -357,6 +357,12 @@ async def get_google_auth_url():
     """
     Generate Google OAuth URL for seamless Sign-In and Google Calendar permission grant.
     """
+    settings = get_settings()
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_ID.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google OAuth no está configurado aún. Falta agregar GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en las variables de Render.",
+        )
     oauth_service = GoogleOAuthService()
     # Use 'auth_login' as state to distinguish from pure integration link
     auth_url = oauth_service.get_authorization_url(organization_id="auth_login")
