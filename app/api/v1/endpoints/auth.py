@@ -16,7 +16,7 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,13 +41,13 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(..., min_length=3, max_length=255)
     company_name: str = Field(..., min_length=2, max_length=255)
     industry: str = Field(default="Servicios Profesionales")
 
 
 class VerifyOtpRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(..., min_length=3, max_length=255)
     code: str = Field(..., min_length=6, max_length=10)
     company_name: str = Field(..., min_length=2, max_length=255)
     password: str = Field(..., min_length=6)
@@ -55,8 +55,8 @@ class VerifyOtpRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
+    email: str = Field(..., min_length=3, max_length=255)
+    password: str = Field(..., min_length=1)
 
 
 class GoogleAuthUrlResponse(BaseModel):
