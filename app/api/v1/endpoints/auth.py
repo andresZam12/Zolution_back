@@ -175,7 +175,7 @@ async def request_registration(
     db.add(verif_record)
     await db.commit()
 
-    sent = await send_verification_email(
+    sent, detail_msg = await send_verification_email(
         to_email=email,
         code=otp_code,
         company_name=payload.company_name,
@@ -185,7 +185,7 @@ async def request_registration(
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="No pudimos enviar el correo de verificación. Intenta de nuevo en unos minutos.",
+            detail=f"No se pudo enviar el correo de verificación ({detail_msg}).",
         )
 
     return {

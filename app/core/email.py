@@ -66,15 +66,18 @@ async def send_verification_email(
     to_email: str,
     code: str,
     company_name: Optional[str] = None,
-) -> bool:
+) -> tuple[bool, str]:
     """
     Dispatch a verification email with the 6-digit code.
     Tries Resend first, then SMTP, and falls back to server console logging.
+    Returns (success: bool, detail: str).
     """
     settings = get_settings()
     subject = f"{code} es tu código de verificación de Zolution"
     html_content = build_verification_html(code, company_name)
     plain_content = f"Tu código de verificación de Zolution es: {code}. Vence en 10 minutos."
+
+    last_error = "No hay proveedores de correo configurados."
 
     # 1. Try Resend API (HTTP)
     if settings.RESEND_API_KEY:
@@ -96,9 +99,17 @@ async def send_verification_email(
                 )
                 if res.status_code in (200, 201):
                     logger.info("Verification email sent via Resend to %s", to_email)
-                    return True
-                logger.error("Resend API error (%d): %s", res.status_code, res.text)
+                    return True, "Enviado exitosamente con Resend."
+                
+                try:
+                    res_json = res.json()
+                    err_msg = res_json.get("message") or res.text
+                except Exception:
+                    err_msg = res.text
+                last_error = f"Resend ({res.status_code}): {err_msg}"
+                logger.error("Resend API error (%d): %s", res.status_code, err_msg)
         except Exception as exc:
+            last_error = f"Resend exception: {exc}"
             logger.error("Failed sending via Resend: %s", exc)
 
     # 2. Try SMTP if configured
@@ -117,12 +128,12 @@ async def send_verification_email(
                 server.send_message(msg)
 
             logger.info("Verification email sent via SMTP to %s", to_email)
-            return True
+            return True, "Enviado exitosamente vía SMTP."
         except Exception as exc:
+            last_error = f"SMTP error: {exc}"
             logger.error("Failed sending via SMTP: %s", exc)
 
     # 3. Local development only: no provider configured and not in production.
-    #    The code is printed in the SERVER log — never returned to the browser.
     provider_configured = bool(settings.RESEND_API_KEY) or bool(
         settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD
     )
@@ -132,8 +143,6 @@ async def send_verification_email(
             to_email,
             code,
         )
-        return True
+        return True, "Simulado en consola de desarrollo."
 
-    # A provider was configured but failed, or production has no provider: report failure.
-    logger.error("Verification email could not be delivered to %s", to_email)
-    return False
+    return False, last_error
