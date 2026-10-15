@@ -3,6 +3,7 @@ Email delivery service for Zolution.
 Supports Resend API (HTTP), SMTP (Gmail, Hostinger, SendGrid), and development console simulation.
 """
 
+import asyncio
 import email.message
 import logging
 import smtplib
@@ -62,6 +63,26 @@ def build_verification_html(code: str, company_name: Optional[str] = None) -> st
     """
 
 
+def _send_smtp_sync(
+    settings,
+    to_email: str,
+    subject: str,
+    plain_content: str,
+    html_content: str,
+) -> None:
+    msg = email.message.EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"Zolution <{settings.SMTP_USER}>"
+    msg["To"] = to_email
+    msg.set_content(plain_content)
+    msg.add_alternative(html_content, subtype="html")
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=12) as server:
+        server.starttls()
+        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.send_message(msg)
+
+
 async def send_verification_email(
     to_email: str,
     code: str,
@@ -69,7 +90,8 @@ async def send_verification_email(
 ) -> tuple[bool, str]:
     """
     Dispatch a verification email with the 6-digit code.
-    Tries Resend first, then SMTP, and falls back to server console logging.
+    Prioritizes SMTP (Gmail/Custom) if configured to allow delivery to any recipient worldwide.
+    Falls back to Resend API if configured.
     Returns (success: bool, detail: str).
     """
     settings = get_settings()
@@ -79,7 +101,19 @@ async def send_verification_email(
 
     last_error = "No hay proveedores de correo configurados."
 
-    # 1. Try Resend API (HTTP)
+    # 1. Try SMTP if configured (Allows sending to ANY recipient in the world without domain restrictions)
+    if settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD:
+        try:
+            await asyncio.to_thread(
+                _send_smtp_sync, settings, to_email, subject, plain_content, html_content
+            )
+            logger.info("Verification email sent via SMTP (%s) to %s", settings.SMTP_HOST, to_email)
+            return True, "Enviado exitosamente vía SMTP."
+        except Exception as exc:
+            last_error = f"SMTP error ({settings.SMTP_HOST}): {exc}"
+            logger.error("Failed sending via SMTP: %s", exc)
+
+    # 2. Try Resend API (HTTP) as fallback or primary if no SMTP
     if settings.RESEND_API_KEY:
         try:
             async with httpx.AsyncClient(timeout=8.0) as client:
@@ -100,7 +134,7 @@ async def send_verification_email(
                 if res.status_code in (200, 201):
                     logger.info("Verification email sent via Resend to %s", to_email)
                     return True, "Enviado exitosamente con Resend."
-                
+
                 try:
                     res_json = res.json()
                     err_msg = res_json.get("message") or res.text
@@ -112,34 +146,13 @@ async def send_verification_email(
             last_error = f"Resend exception: {exc}"
             logger.error("Failed sending via Resend: %s", exc)
 
-    # 2. Try SMTP if configured
-    if settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD:
-        try:
-            msg = email.message.EmailMessage()
-            msg["Subject"] = subject
-            msg["From"] = settings.SMTP_USER
-            msg["To"] = to_email
-            msg.set_content(plain_content)
-            msg.add_alternative(html_content, subtype="html")
-
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
-                server.starttls()
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.send_message(msg)
-
-            logger.info("Verification email sent via SMTP to %s", to_email)
-            return True, "Enviado exitosamente vía SMTP."
-        except Exception as exc:
-            last_error = f"SMTP error: {exc}"
-            logger.error("Failed sending via SMTP: %s", exc)
-
     # 3. Local development only: no provider configured and not in production.
     provider_configured = bool(settings.RESEND_API_KEY) or bool(
         settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD
     )
     if not provider_configured and settings.APP_ENV != "production":
         logger.warning(
-            "[ZOLUTION DEV EMAIL] To: %s | OTP: %s (configure RESEND_API_KEY for real delivery)",
+            "[ZOLUTION DEV EMAIL] To: %s | OTP: %s (configure SMTP or RESEND for live delivery)",
             to_email,
             code,
         )
