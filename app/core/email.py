@@ -110,7 +110,41 @@ async def send_verification_email(
 
     last_error = "No hay proveedores de correo configurados."
 
-    # 1. Try SMTP if configured (Allows sending to ANY recipient in the world without domain restrictions)
+    # 1. Try Brevo HTTP API (Port 443 HTTPS - Not blocked by Render free tier, sends to ANY recipient without custom domain)
+    if settings.BREVO_API_KEY.strip():
+        try:
+            sender_email = settings.BREVO_SENDER_EMAIL.strip() or "andresze2001@gmail.com"
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                res = await client.post(
+                    "https://api.brevo.com/v3/smtp/email",
+                    headers={
+                        "api-key": settings.BREVO_API_KEY.strip(),
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "sender": {"name": "Zolution", "email": sender_email},
+                        "to": [{"email": to_email.strip()}],
+                        "subject": subject,
+                        "htmlContent": html_content,
+                        "textContent": plain_content,
+                    },
+                )
+                if res.status_code in (200, 201):
+                    logger.info("Verification email sent via Brevo to %s", to_email)
+                    return True, "Enviado exitosamente con Brevo."
+
+                try:
+                    res_json = res.json()
+                    err_msg = res_json.get("message") or res.text
+                except Exception:
+                    err_msg = res.text
+                last_error = f"Brevo ({res.status_code}): {err_msg}"
+                logger.error("Brevo API error (%d): %s", res.status_code, err_msg)
+        except Exception as exc:
+            last_error = f"Brevo exception: {exc}"
+            logger.error("Failed sending via Brevo: %s", exc)
+
+    # 2. Try SMTP if configured (Works on local or paid tiers where ports 587/465 aren't blocked)
     if settings.SMTP_HOST.strip() and settings.SMTP_USER.strip() and settings.SMTP_PASSWORD.strip():
         try:
             await asyncio.to_thread(
@@ -155,9 +189,11 @@ async def send_verification_email(
             last_error = f"Resend exception: {exc}"
             logger.error("Failed sending via Resend: %s", exc)
 
-    # 3. Local development only: no provider configured and not in production.
-    provider_configured = bool(settings.RESEND_API_KEY) or bool(
-        settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD
+    # 4. Local development only: no provider configured and not in production.
+    provider_configured = (
+        bool(settings.BREVO_API_KEY.strip())
+        or bool(settings.RESEND_API_KEY.strip())
+        or bool(settings.SMTP_HOST.strip() and settings.SMTP_USER.strip() and settings.SMTP_PASSWORD.strip())
     )
     if not provider_configured and settings.APP_ENV != "production":
         logger.warning(

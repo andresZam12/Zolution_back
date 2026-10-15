@@ -146,8 +146,10 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/integrations/google-calendar/callback"
 
     # -------------------------------------------------------------------------
-    # Email Service (Resend or SMTP)
+    # Email Service (Brevo HTTP API, Resend, or SMTP)
     # -------------------------------------------------------------------------
+    BREVO_API_KEY: str = ""
+    BREVO_SENDER_EMAIL: str = ""
     RESEND_API_KEY: str = ""
     EMAIL_FROM: str = "Zolution <onboarding@resend.dev>"
     SMTP_HOST: str = ""
