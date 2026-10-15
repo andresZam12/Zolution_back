@@ -70,16 +70,25 @@ def _send_smtp_sync(
     plain_content: str,
     html_content: str,
 ) -> None:
+    host = settings.SMTP_HOST.strip()
+    try:
+        port = int(str(settings.SMTP_PORT).strip())
+    except (ValueError, TypeError):
+        port = 587
+    user = settings.SMTP_USER.strip()
+    # Google App Passwords often have spaces (e.g. 'abcd efgh ijkl mnop')
+    password = settings.SMTP_PASSWORD.strip().replace(" ", "")
+
     msg = email.message.EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = f"Zolution <{settings.SMTP_USER}>"
-    msg["To"] = to_email
+    msg["From"] = f"Zolution <{user}>"
+    msg["To"] = to_email.strip()
     msg.set_content(plain_content)
     msg.add_alternative(html_content, subtype="html")
 
-    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=12) as server:
+    with smtplib.SMTP(host, port, timeout=12) as server:
         server.starttls()
-        server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+        server.login(user, password)
         server.send_message(msg)
 
 
@@ -110,7 +119,7 @@ async def send_verification_email(
             logger.info("Verification email sent via SMTP (%s) to %s", settings.SMTP_HOST, to_email)
             return True, "Enviado exitosamente vía SMTP."
         except Exception as exc:
-            last_error = f"SMTP error ({settings.SMTP_HOST}): {exc}"
+            last_error = f"SMTP error ({settings.SMTP_HOST.strip()}): {exc}"
             logger.error("Failed sending via SMTP: %s", exc)
 
     # 2. Try Resend API (HTTP) as fallback or primary if no SMTP
