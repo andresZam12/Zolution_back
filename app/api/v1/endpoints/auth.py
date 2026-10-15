@@ -8,6 +8,7 @@ Provides:
 - Current user profile (/me).
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -15,9 +16,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 import httpx
+from email_validator import EmailNotValidError, validate_email
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models import AgentConfig
@@ -26,7 +28,14 @@ from app.auth.models import UserContext
 from app.core.config import get_settings
 from app.core.database import get_db_session
 from app.core.email import send_verification_email
-from app.core.security import create_access_token, generate_otp_code, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    generate_otp_code,
+    hash_otp_code,
+    hash_password,
+    verify_otp_code,
+    verify_password,
+)
 from app.integrations.google.auth import GoogleOAuthService
 from app.integrations.models import IntegrationCredential
 from app.tenants.models import Organization, User, VerificationCode
@@ -94,19 +103,49 @@ class AuthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+MAX_OTP_ATTEMPTS = 5
+OTP_TTL_MINUTES = 10
+
+
+async def _normalize_and_validate_email(raw_email: str) -> str:
+    """
+    Validate the email syntax AND that its domain can actually receive mail
+    (DNS MX lookup). Returns the normalized, lower-cased address.
+    """
+    try:
+        info = await asyncio.to_thread(validate_email, raw_email.strip(), check_deliverability=True)
+    except EmailNotValidError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El correo electrónico no es válido o su dominio no puede recibir correos.",
+        ) from exc
+    return info.normalized.lower()
+
+
+async def _set_tenant_context(db: AsyncSession, organization_id: uuid.UUID) -> None:
+    """
+    Set the RLS tenant variable for the current transaction so inserts into
+    tenant-scoped tables (agent_configs, integration_credentials) pass policy checks.
+    """
+    await db.execute(
+        text("SELECT set_config('app.current_organization_id', :org_id, true)"),
+        {"org_id": str(organization_id)},
+    )
+
+
 @router.post("/register-request", status_code=status.HTTP_200_OK)
 async def request_registration(
     payload: RegisterRequest,
     db: AsyncSession = Depends(get_db_session),
 ):
     """
-    Step 1: Check user existence, generate 6-digit OTP code, and dispatch verification email.
+    Step 1: Validate the email, generate a 6-digit OTP and send it by email.
+    The code is NEVER returned in the response — it only travels by email.
     """
-    settings = get_settings()
+    email = await _normalize_and_validate_email(payload.email)
 
-    # Check if a verified user with this email already exists
     existing = await db.execute(
-        select(User).where(User.email == payload.email, User.is_verified == True)  # noqa: E712
+        select(User).where(User.email == email, User.is_verified == True)  # noqa: E712
     )
     if existing.scalar_one_or_none():
         raise HTTPException(
@@ -117,45 +156,43 @@ async def request_registration(
     # Invalidate previous unused codes for this email
     prev_codes = await db.execute(
         select(VerificationCode).where(
-            VerificationCode.email == payload.email,
+            VerificationCode.email == email,
             VerificationCode.is_used == False,  # noqa: E712
         )
     )
     for c in prev_codes.scalars().all():
         c.is_used = True
 
-    # Generate new 6-digit OTP
     otp_code = generate_otp_code(6)
-    expires_at = datetime.now(UTC) + timedelta(minutes=10)
-
     verif_record = VerificationCode(
-        email=payload.email,
-        code=otp_code,
+        email=email,
+        code=hash_otp_code(email, otp_code),
         purpose="registration",
-        expires_at=expires_at,
+        expires_at=datetime.now(UTC) + timedelta(minutes=OTP_TTL_MINUTES),
         is_used=False,
+        attempts=0,
     )
     db.add(verif_record)
     await db.commit()
 
-    # Send verification email asynchronously
-    await send_verification_email(
-        to_email=payload.email,
+    sent = await send_verification_email(
+        to_email=email,
         code=otp_code,
         company_name=payload.company_name,
     )
+    if not sent:
+        verif_record.is_used = True
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No pudimos enviar el correo de verificación. Intenta de nuevo en unos minutos.",
+        )
 
-    response_data = {
+    return {
         "status": "code_sent",
-        "email": payload.email,
-        "message": "Código de verificación de 6 dígitos enviado exitosamente a tu correo.",
+        "email": email,
+        "message": "Te enviamos un código de 6 dígitos. Revisa tu bandeja de entrada (y spam).",
     }
-
-    # In development mode or when no real email provider is configured, provide dev_code for instant testing
-    if settings.APP_ENV != "production" or not settings.RESEND_API_KEY:
-        response_data["dev_code"] = otp_code
-
-    return response_data
 
 
 @router.post("/verify-code", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -167,25 +204,52 @@ async def verify_code_and_register(
     Step 2: Validate OTP code, persist User + Organization in PostgreSQL,
     create default AgentConfig, and return access token.
     """
-    # Look for matching active verification code
-    now = datetime.now(UTC)
+    email = payload.email.strip().lower()
+    submitted_code = payload.code.strip()
+
+    # Latest active code for this email
     stmt = (
         select(VerificationCode)
         .where(
-            VerificationCode.email == payload.email,
-            VerificationCode.code == payload.code.strip(),
+            VerificationCode.email == email,
             VerificationCode.is_used == False,  # noqa: E712
-            VerificationCode.expires_at > now,
+            VerificationCode.expires_at > datetime.now(UTC),
         )
         .order_by(VerificationCode.created_at.desc())
     )
-    result = await db.execute(stmt)
-    code_record = result.scalars().first()
+    code_record = (await db.execute(stmt)).scalars().first()
 
     if not code_record:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Código de verificación incorrecto o expirado. Solicita uno nuevo.",
+            detail="El código expiró o ya fue usado. Solicita uno nuevo.",
+        )
+
+    if not verify_otp_code(email, submitted_code, code_record.code):
+        code_record.attempts += 1
+        remaining = MAX_OTP_ATTEMPTS - code_record.attempts
+        if remaining <= 0:
+            code_record.is_used = True
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Código incorrecto. Te quedan {remaining} intento(s)."
+                if remaining > 0
+                else "Demasiados intentos fallidos. Solicita un código nuevo."
+            ),
+        )
+
+    # Guard against a race where the account was verified meanwhile
+    already = await db.execute(
+        select(User).where(User.email == email, User.is_verified == True)  # noqa: E712
+    )
+    if already.scalar_one_or_none():
+        code_record.is_used = True
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Esta cuenta ya fue verificada. Inicia sesión.",
         )
 
     # Mark code as used
@@ -215,6 +279,9 @@ async def verify_code_and_register(
     db.add(org)
     await db.flush()  # Populates org.id
 
+    # agent_configs is protected by RLS: bind this transaction to the new tenant
+    await _set_tenant_context(db, org.id)
+
     # Create default AgentConfig
     agent = AgentConfig(
         organization_id=org.id,
@@ -226,7 +293,7 @@ async def verify_code_and_register(
     db.add(agent)
 
     # Check if an unverified user record exists or create new
-    user_stmt = select(User).where(User.email == payload.email)
+    user_stmt = select(User).where(User.email == email)
     existing_user = (await db.execute(user_stmt)).scalar_one_or_none()
 
     if existing_user:
@@ -237,7 +304,7 @@ async def verify_code_and_register(
         user = existing_user
     else:
         user = User(
-            email=payload.email,
+            email=email,
             password_hash=hash_password(payload.password),
             role="owner",
             is_active=True,
@@ -288,7 +355,7 @@ async def login(
     Authenticate an existing user with email and password.
     Returns access token with tenant context.
     """
-    stmt = select(User).where(User.email == payload.email)
+    stmt = select(User).where(User.email == payload.email.strip().lower())
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
@@ -416,6 +483,8 @@ async def google_auth_callback(
             detail="La cuenta de Google no devolvió un correo electrónico.",
         )
 
+    google_email = google_email.strip().lower()
+
     # Check if user already exists by google_id or email
     user_stmt = select(User).where((User.google_id == google_sub) | (User.email == google_email))
     user = (await db.execute(user_stmt)).scalar_one_or_none()
@@ -449,6 +518,7 @@ async def google_auth_callback(
         )
         db.add(org)
         await db.flush()
+        await _set_tenant_context(db, org.id)
 
         # Provision initial AgentConfig
         agent = AgentConfig(
@@ -473,6 +543,7 @@ async def google_auth_callback(
 
     # Automatically save Google Calendar integration credentials for this organization
     if org:
+        await _set_tenant_context(db, org.id)
         cred_stmt = select(IntegrationCredential).where(
             IntegrationCredential.organization_id == org.id,
             IntegrationCredential.provider == "google",

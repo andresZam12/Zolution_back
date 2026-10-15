@@ -26,6 +26,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     func,
 )
@@ -140,13 +141,16 @@ class VerificationCode(Base):
         server_default=func.gen_random_uuid(),
     )
     email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    code: Mapped[str] = mapped_column(String(10), nullable=False)
+    # HMAC-SHA256 hash of the code — the plain code is never stored
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
     purpose: Mapped[str] = mapped_column(String(50), nullable=False, default="registration")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     is_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Failed verification attempts — the code is burned after MAX_OTP_ATTEMPTS
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     def __repr__(self) -> str:
-        return f"<VerificationCode email={self.email!r} code={self.code!r} used={self.is_used}>"
+        return f"<VerificationCode email={self.email!r} used={self.is_used} attempts={self.attempts}>"

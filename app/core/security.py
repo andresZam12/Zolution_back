@@ -45,6 +45,21 @@ def generate_otp_code(length: int = 6) -> str:
     return "".join(secrets.choice(digits) for _ in range(length))
 
 
+def hash_otp_code(email: str, code: str) -> str:
+    """
+    Hash an OTP with HMAC-SHA256 keyed by SECRET_KEY and bound to the email.
+    Only this hash is persisted, so a DB leak never exposes usable codes.
+    """
+    settings = get_settings()
+    message = f"{email.strip().lower()}:{code.strip()}".encode("utf-8")
+    return hmac.new(settings.SECRET_KEY.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def verify_otp_code(email: str, code: str, stored_hash: str) -> bool:
+    """Constant-time comparison of a submitted OTP against its stored hash."""
+    return hmac.compare_digest(hash_otp_code(email, code), stored_hash)
+
+
 def create_access_token(
     data: dict[str, Any],
     expires_delta: timedelta | None = None,

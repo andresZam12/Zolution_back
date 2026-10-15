@@ -121,18 +121,19 @@ async def send_verification_email(
         except Exception as exc:
             logger.error("Failed sending via SMTP: %s", exc)
 
-    # 3. Development / Sandbox fallback: Log prominently in server console
-    logger.warning(
-        "\n"
-        "======================================================================\n"
-        "📧 [ZOLUTION SIMULATED EMAIL - DEV MODE]\n"
-        "To: %s\n"
-        "Subject: %s\n"
-        "OTP CODE: >>> %s <<<\n"
-        "(Configura RESEND_API_KEY o credenciales SMTP para envío en vivo)\n"
-        "======================================================================",
-        to_email,
-        subject,
-        code,
+    # 3. Local development only: no provider configured and not in production.
+    #    The code is printed in the SERVER log — never returned to the browser.
+    provider_configured = bool(settings.RESEND_API_KEY) or bool(
+        settings.SMTP_HOST and settings.SMTP_USER and settings.SMTP_PASSWORD
     )
-    return True
+    if not provider_configured and settings.APP_ENV != "production":
+        logger.warning(
+            "[ZOLUTION DEV EMAIL] To: %s | OTP: %s (configure RESEND_API_KEY for real delivery)",
+            to_email,
+            code,
+        )
+        return True
+
+    # A provider was configured but failed, or production has no provider: report failure.
+    logger.error("Verification email could not be delivered to %s", to_email)
+    return False
