@@ -3,6 +3,7 @@ Google Workspace OAuth2 authentication flow.
 """
 
 from datetime import UTC, datetime, timedelta
+from typing import Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -27,16 +28,17 @@ class GoogleOAuthService:
             "https://www.googleapis.com/auth/spreadsheets",
         ]
 
-    def get_authorization_url(self, organization_id: str) -> str:
+    def get_authorization_url(self, organization_id: str, redirect_uri: Optional[str] = None) -> str:
         """
         Generate the URL to redirect the user to Google for consent.
         We pass the organization_id in the 'state' parameter to map the callback
         back to the correct tenant.
         """
         base_url = "https://accounts.google.com/o/oauth2/v2/auth"
+        target_redirect = redirect_uri or self.redirect_uri
         params = {
             "client_id": self.client_id,
-            "redirect_uri": self.redirect_uri,
+            "redirect_uri": target_redirect,
             "response_type": "code",
             "scope": " ".join(self.scopes),
             "access_type": "offline",
@@ -45,16 +47,17 @@ class GoogleOAuthService:
         }
         return f"{base_url}?{urlencode(params)}"
 
-    async def exchange_code_for_tokens(self, code: str) -> dict:
+    async def exchange_code_for_tokens(self, code: str, redirect_uri: Optional[str] = None) -> dict:
         """
         Exchange the authorization code for access and refresh tokens.
         """
         url = "https://oauth2.googleapis.com/token"
+        target_redirect = redirect_uri or self.redirect_uri
         data = {
             "client_id": self.client_id,
             "client_secret": self.client_secret,
             "code": code,
-            "redirect_uri": self.redirect_uri,
+            "redirect_uri": target_redirect,
             "grant_type": "authorization_code",
         }
 

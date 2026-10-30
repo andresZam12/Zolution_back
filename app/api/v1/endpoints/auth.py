@@ -420,7 +420,7 @@ async def login(
 
 
 @router.get("/google/url", response_model=GoogleAuthUrlResponse)
-async def get_google_auth_url():
+async def get_google_auth_url(redirect_uri: Optional[str] = None):
     """
     Generate Google OAuth URL for seamless Sign-In and Google Calendar permission grant.
     """
@@ -431,8 +431,12 @@ async def get_google_auth_url():
             detail="Google OAuth no está configurado aún. Falta agregar GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en las variables de Render.",
         )
     oauth_service = GoogleOAuthService()
-    # Use 'auth_login' as state to distinguish from pure integration link
-    auth_url = oauth_service.get_authorization_url(organization_id="auth_login")
+    target_redirect = redirect_uri or (
+        settings.GOOGLE_REDIRECT_URI
+        if settings.GOOGLE_REDIRECT_URI and "localhost" not in settings.GOOGLE_REDIRECT_URI
+        else "https://zolution-front.vercel.app/login"
+    )
+    auth_url = oauth_service.get_authorization_url(organization_id="auth_login", redirect_uri=target_redirect)
     return GoogleAuthUrlResponse(auth_url=auth_url)
 
 
@@ -449,10 +453,16 @@ async def google_auth_callback(
     4. Automatically store Google Calendar refresh token in integration_credentials.
     5. Issue Zolution access token.
     """
+    settings = get_settings()
+    target_redirect = payload.redirect_uri or (
+        settings.GOOGLE_REDIRECT_URI
+        if settings.GOOGLE_REDIRECT_URI and "localhost" not in settings.GOOGLE_REDIRECT_URI
+        else "https://zolution-front.vercel.app/login"
+    )
     oauth_service = GoogleOAuthService()
 
     try:
-        tokens = await oauth_service.exchange_code_for_tokens(payload.code)
+        tokens = await oauth_service.exchange_code_for_tokens(payload.code, redirect_uri=target_redirect)
     except Exception as exc:
         logger.error("Failed exchanging Google OAuth code: %s", exc)
         raise HTTPException(
