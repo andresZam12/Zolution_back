@@ -96,6 +96,7 @@ class AuthResponse(BaseModel):
     token_type: str = "bearer"
     user: UserProfileResponse
     organization: OrganizationProfileResponse
+    is_new_user: Optional[bool] = False
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +499,7 @@ async def google_auth_callback(
     # Check if user already exists by google_id or email
     user_stmt = select(User).where((User.google_id == google_sub) | (User.email == google_email))
     user = (await db.execute(user_stmt)).scalar_one_or_none()
+    is_new_user = False
 
     if user:
         user.google_id = google_sub
@@ -506,6 +508,7 @@ async def google_auth_callback(
         org_stmt = select(Organization).where(Organization.id == user.organization_id)
         org = (await db.execute(org_stmt)).scalar_one_or_none()
     else:
+        is_new_user = True
         # Create new Organization for this user
         clean_slug = re.sub(r"[^a-z0-9]+", "-", google_name.lower().strip()).strip("-")
         if not clean_slug:
@@ -607,6 +610,7 @@ async def google_auth_callback(
             name=org.name if org else google_name,
             slug=org.slug if org else "empresa",
         ),
+        is_new_user=is_new_user,
     )
 
 
