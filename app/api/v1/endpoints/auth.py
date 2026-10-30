@@ -82,6 +82,8 @@ class UserProfileResponse(BaseModel):
     email: str
     role: str
     is_verified: bool
+    name: Optional[str] = None
+    picture: Optional[str] = None
 
 
 class OrganizationProfileResponse(BaseModel):
@@ -337,6 +339,8 @@ async def verify_code_and_register(
             email=user.email,
             role=user.role,
             is_verified=user.is_verified,
+            name=google_name,
+            picture=google_picture,
         ),
         organization=OrganizationProfileResponse(
             id=str(org.id),
@@ -421,9 +425,10 @@ async def login(
 
 
 @router.get("/google/url", response_model=GoogleAuthUrlResponse)
-async def get_google_auth_url(redirect_uri: Optional[str] = None):
+async def get_google_auth_url(redirect_uri: Optional[str] = None, state: Optional[str] = None):
     """
     Generate Google OAuth URL for seamless Sign-In and Google Calendar permission grant.
+    Supports dynamic cryptographic state parameter for Anti-CSRF protection.
     """
     settings = get_settings()
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_ID.strip():
@@ -437,7 +442,8 @@ async def get_google_auth_url(redirect_uri: Optional[str] = None):
         if settings.GOOGLE_REDIRECT_URI and "localhost" not in settings.GOOGLE_REDIRECT_URI
         else "https://zolution-front.vercel.app/login"
     )
-    auth_url = oauth_service.get_authorization_url(organization_id="auth_login", redirect_uri=target_redirect)
+    target_state = state or "auth_login"
+    auth_url = oauth_service.get_authorization_url(organization_id=target_state, redirect_uri=target_redirect)
     return GoogleAuthUrlResponse(auth_url=auth_url)
 
 
@@ -487,11 +493,19 @@ async def google_auth_callback(
     google_email = google_profile.get("email")
     google_sub = google_profile.get("sub")
     google_name = google_profile.get("name") or google_email.split("@")[0]
+    google_picture = google_profile.get("picture")
 
     if not google_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="La cuenta de Google no devolvió un correo electrónico.",
+        )
+
+    # Security: Ensure Google verified ownership of this email
+    if google_profile.get("email_verified") is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El correo electrónico de Google no está verificado.",
         )
 
     google_email = google_email.strip().lower()
