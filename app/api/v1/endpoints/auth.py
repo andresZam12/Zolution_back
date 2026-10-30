@@ -551,8 +551,9 @@ async def google_auth_callback(
 
     await db.flush()
 
-    # Automatically save Google Calendar integration credentials for this organization
-    if org:
+    # Automatically save Google Calendar integration credentials ONLY if calendar permissions were granted
+    granted_scopes = tokens.get("scopes") or ""
+    if org and "calendar" in granted_scopes:
         await _set_tenant_context(db, org.id)
         cred_stmt = select(IntegrationCredential).where(
             IntegrationCredential.organization_id == org.id,

@@ -35,7 +35,7 @@ async def authorize_google(
     if not organization_id:
         raise HTTPException(status_code=400, detail="No organization context found")
 
-    oauth_service = GoogleOAuthService()
+    oauth_service = GoogleOAuthService(scopes=GoogleOAuthService.INTEGRATION_SCOPES)
     url = oauth_service.get_authorization_url(organization_id)
     return GoogleOAuthUrlResponse(auth_url=url)
 
@@ -53,7 +53,7 @@ async def google_callback(
     """
     organization_id = request.state.organization_id
 
-    oauth_service = GoogleOAuthService()
+    oauth_service = GoogleOAuthService(scopes=GoogleOAuthService.INTEGRATION_SCOPES)
     try:
         tokens = await oauth_service.exchange_code_for_tokens(payload.code)
     except Exception as e:

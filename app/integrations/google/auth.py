@@ -14,19 +14,28 @@ from app.core.config import get_settings
 class GoogleOAuthService:
     """Handles Google OAuth2 authorization and token exchange."""
 
-    def __init__(self):
+    # Standard login scopes: non-sensitive, no verification required, can be published immediately to everyone
+    LOGIN_SCOPES = [
+        "openid",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+    ]
+
+    # Full integration scopes for Calendar and Sheets (connected optionally in Integrations page)
+    INTEGRATION_SCOPES = [
+        "openid",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/spreadsheets",
+    ]
+
+    def __init__(self, scopes: Optional[list[str]] = None):
         self.settings = get_settings()
         self.client_id = self.settings.GOOGLE_CLIENT_ID
         self.client_secret = self.settings.GOOGLE_CLIENT_SECRET
         self.redirect_uri = self.settings.GOOGLE_REDIRECT_URI
-
-        # We request scopes for Calendar and Sheets
-        self.scopes = [
-            "openid",
-            "email",
-            "https://www.googleapis.com/auth/calendar.events",
-            "https://www.googleapis.com/auth/spreadsheets",
-        ]
+        self.scopes = scopes or self.LOGIN_SCOPES
 
     def get_authorization_url(self, organization_id: str, redirect_uri: Optional[str] = None) -> str:
         """
