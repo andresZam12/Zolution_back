@@ -2,19 +2,23 @@
 Schemas for integrations.
 """
 
-from pydantic import BaseModel, HttpUrl
+from datetime import datetime
+from typing import Optional
+
+from pydantic import BaseModel
 
 
 class GoogleOAuthUrlResponse(BaseModel):
     """Response containing the Google OAuth2 authorization URL."""
 
-    auth_url: HttpUrl
+    auth_url: str
 
 
 class GoogleOAuthCallbackRequest(BaseModel):
     """The data received from the frontend after Google redirects back."""
 
     code: str
+    redirect_uri: Optional[str] = None
 
 
 class IntegrationStatusResponse(BaseModel):
@@ -22,4 +26,6 @@ class IntegrationStatusResponse(BaseModel):
 
     provider: str
     is_connected: bool
-    email_address: str | None = None
+    email_address: Optional[str] = None
+    scopes: Optional[str] = None
+    updated_at: Optional[datetime] = None

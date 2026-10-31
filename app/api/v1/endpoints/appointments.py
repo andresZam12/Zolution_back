@@ -3,6 +3,7 @@ Appointment scheduling API endpoints for tenant dashboard.
 """
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ class AppointmentCreate(BaseModel):
     customer_phone: str
     start_time: str
     end_time: str
+    notes: Optional[str] = None
 
 
 class AppointmentResponse(BaseModel):
@@ -32,6 +34,8 @@ class AppointmentResponse(BaseModel):
 
     status: str
     message: str
+    event_id: Optional[str] = None
+    html_link: Optional[str] = None
 
 
 class AvailabilityResponse(BaseModel):
@@ -94,13 +98,21 @@ async def create_appointment(
     service = GoogleCalendarService(db, org_id)
 
     try:
-        msg = await service.create_appointment(
+        res = await service.create_appointment(
             customer_name=payload.customer_name,
             customer_phone=payload.customer_phone,
             start_time=payload.start_time,
             end_time=payload.end_time,
+            notes=payload.notes or "",
         )
-        return AppointmentResponse(status="success", message=msg)
+        if isinstance(res, dict):
+            return AppointmentResponse(
+                status="success" if res.get("success") else "error",
+                message=res.get("message", ""),
+                event_id=res.get("event_id"),
+                html_link=res.get("html_link"),
+            )
+        return AppointmentResponse(status="success", message=str(res))
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
