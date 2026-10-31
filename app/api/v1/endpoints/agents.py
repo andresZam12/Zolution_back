@@ -21,7 +21,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.schemas import (
     AgentConfigResponse,
+    AgentConfigUpdate,
     AgentStatusResponse,
+    LLMProviderUpdate,
     OnboardingAnswersUpdate,
 )
 from app.agents.services import AgentConfigService
@@ -152,4 +154,38 @@ async def activate_agent(
     _require_owner(user)
     org_id = _require_org_context(user)
     config = await _service.activate(org_id, db)
+    return AgentConfigResponse.model_validate(config)
+
+
+@router.patch(
+    "/me",
+    response_model=AgentConfigResponse,
+    summary="Update agent configuration",
+    description="Partially updates system prompt, LLM provider/model, status, and onboarding answers.",
+)
+async def update_my_agent_config(
+    data: AgentConfigUpdate,
+    user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> AgentConfigResponse:
+    _require_owner(user)
+    org_id = _require_org_context(user)
+    config = await _service.update_config(org_id, data, db)
+    return AgentConfigResponse.model_validate(config)
+
+
+@router.patch(
+    "/me/llm-provider",
+    response_model=AgentConfigResponse,
+    summary="Update LLM provider and model",
+    description="Updates the LLM provider and model for the current user's organization.",
+)
+async def update_my_llm_provider(
+    data: LLMProviderUpdate,
+    user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> AgentConfigResponse:
+    _require_owner(user)
+    org_id = _require_org_context(user)
+    config = await _service.set_llm_provider(org_id, data.llm_provider, data.llm_model, db)
     return AgentConfigResponse.model_validate(config)

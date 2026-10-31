@@ -83,17 +83,13 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
 
         Verification is done by `get_current_user()` in the route handler.
         Here we only need the claim value to set the DB context variable.
+        Supports both native Zolution HS256 tokens (`organization_id`) and
+        Auth0 RS256 tokens (`https://api.zolution.app/org_id`).
         """
         try:
-            # options={"verify_signature": False} is intentional here —
-            # we just need the payload to set DB context, not to authenticate.
-            payload = jwt.decode(
-                token,
-                key="",
-                options={"verify_signature": False, "verify_exp": False},
-                algorithms=get_settings().AUTH0_ALGORITHMS,
-            )
+            payload = jwt.get_unverified_claims(token)
             namespace = "https://api.zolution.app"
-            return payload.get(f"{namespace}/org_id")
+            org_id = payload.get("organization_id") or payload.get(f"{namespace}/org_id")
+            return str(org_id) if org_id else None
         except JWTError:
             return None

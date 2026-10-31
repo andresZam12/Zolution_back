@@ -5,7 +5,7 @@ Provides:
 - OTP verification and automatic User + Organization + AgentConfig provisioning.
 - Password login with JWT issuance.
 - Google OAuth 2.0 Sign-In + automatic Google Calendar token pairing.
-- Current user profile (/me).
+- Current user profile (/me) and password management (/set-password).
 """
 
 import asyncio
@@ -66,6 +66,10 @@ class VerifyOtpRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: str = Field(..., min_length=3, max_length=255)
     password: str = Field(..., min_length=1)
+
+
+class SetPasswordRequest(BaseModel):
+    password: str = Field(..., min_length=6, max_length=128)
 
 
 class GoogleAuthUrlResponse(BaseModel):
@@ -285,11 +289,17 @@ async def verify_code_and_register(
     # agent_configs is protected by RLS: bind this transaction to the new tenant
     await _set_tenant_context(db, org.id)
 
-    # Create default AgentConfig
+    # Create default AgentConfig with initial onboarding metadata
     agent = AgentConfig(
         organization_id=org.id,
         llm_provider="openai",
         llm_model="gpt-4o-mini",
+        onboarding_answers={
+            "companyName": payload.company_name,
+            "business_name": payload.company_name,
+            "industry": payload.industry,
+            "business_type": payload.industry,
+        },
         system_prompt_generated=None,
         status="active",
     )
@@ -377,9 +387,21 @@ async def login(
 
     # Load organization
     org = None
+    org_industry: Optional[str] = None
     if user.organization_id:
         org_stmt = select(Organization).where(Organization.id == user.organization_id)
         org = (await db.execute(org_stmt)).scalar_one_or_none()
+        try:
+            await _set_tenant_context(db, user.organization_id)
+            agent_stmt = select(AgentConfig).where(AgentConfig.organization_id == user.organization_id)
+            agent_cfg = (await db.execute(agent_stmt)).scalar_one_or_none()
+            if agent_cfg and isinstance(agent_cfg.onboarding_answers, dict):
+                org_industry = (
+                    agent_cfg.onboarding_answers.get("industry")
+                    or agent_cfg.onboarding_answers.get("business_type")
+                )
+        except Exception:
+            pass
 
     if not org:
         # Fallback dummy organization if none linked
@@ -409,11 +431,13 @@ async def login(
             email=user.email,
             role=user.role,
             is_verified=user.is_verified,
+            name=user.email.split("@")[0],
         ),
         organization=OrganizationProfileResponse(
             id=org_id,
             name=org_name,
             slug=org_slug,
+            industry=org_industry,
         ),
     )
 
@@ -551,6 +575,12 @@ async def google_auth_callback(
             organization_id=org.id,
             llm_provider="openai",
             llm_model="gpt-4o-mini",
+            onboarding_answers={
+                "companyName": f"Empresa de {google_name}",
+                "business_name": f"Empresa de {google_name}",
+                "industry": "Servicios Profesionales y Consultoría",
+                "business_type": "Servicios Profesionales y Consultoría",
+            },
             status="active",
         )
         db.add(agent)
@@ -594,6 +624,21 @@ async def google_auth_callback(
             )
             db.add(credential)
 
+    # Read saved industry from AgentConfig if available
+    saved_industry: Optional[str] = None
+    if org:
+        try:
+            await _set_tenant_context(db, org.id)
+            agent_stmt = select(AgentConfig).where(AgentConfig.organization_id == org.id)
+            agent_cfg = (await db.execute(agent_stmt)).scalar_one_or_none()
+            if agent_cfg and isinstance(agent_cfg.onboarding_answers, dict):
+                saved_industry = (
+                    agent_cfg.onboarding_answers.get("industry")
+                    or agent_cfg.onboarding_answers.get("business_type")
+                )
+        except Exception:
+            pass
+
     await db.commit()
     await db.refresh(user)
     if org:
@@ -624,9 +669,36 @@ async def google_auth_callback(
             id=str(org.id) if org else str(uuid.uuid4()),
             name=org.name if org else google_name,
             slug=org.slug if org else "empresa",
+            industry=saved_industry,
         ),
         is_new_user=is_new_user,
     )
+
+
+@router.post("/set-password", status_code=status.HTTP_200_OK)
+async def set_user_password(
+    payload: SetPasswordRequest,
+    current_user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Allow an authenticated user (including users who registered via Google)
+    to set or update their manual login password.
+    """
+    stmt = select(User).where(User.id == current_user.user_id)
+    user = (await db.execute(stmt)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado.",
+        )
+
+    user.password_hash = hash_password(payload.password)
+    user.is_verified = True
+    db.add(user)
+    await db.commit()
+
+    return {"status": "ok", "message": "Contraseña actualizada exitosamente."}
 
 
 @router.get("/me", response_model=UserProfileResponse)

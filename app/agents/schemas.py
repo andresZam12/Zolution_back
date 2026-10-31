@@ -52,7 +52,10 @@ class OnboardingAnswers(BaseModel):
 
     All fields are optional so that a partial onboarding save is valid —
     the agent_config.status stays 'draft' until all required fields are present.
+    Also accepts frontend camelCase fields (companyName, industry, schedule, etc.).
     """
+
+    model_config = ConfigDict(extra="allow")
 
     # Business identity
     business_name: str | None = Field(default=None, max_length=255)
@@ -62,15 +65,14 @@ class OnboardingAnswers(BaseModel):
     )
     address: str | None = Field(default=None, max_length=500)
 
-    # Services & pricing
-    services: list[ServiceItem] = Field(
+    # Services & pricing (supports structured list or free-text catalog from frontend)
+    services: list[ServiceItem] | str = Field(
         default_factory=list,
-        max_length=50,
-        description="List of services offered with optional pricing.",
+        description="List of services offered with optional pricing, or free-text catalog.",
     )
 
-    # Operating schedule
-    hours: dict[str, BusinessHours] = Field(
+    # Operating schedule (supports structured dict or free-text schedule from frontend)
+    hours: dict[str, BusinessHours] | str = Field(
         default_factory=dict,
         description="Operating hours keyed by day name (monday, tuesday, etc.).",
     )
@@ -103,6 +105,17 @@ class OnboardingAnswers(BaseModel):
         default=None,
         description="Phone or name to escalate to when human intervention needed.",
     )
+
+    # Frontend onboarding / settings fields
+    companyName: str | None = Field(default=None, max_length=255)
+    industry: str | None = Field(default=None, max_length=255)
+    whatsappPhone: str | None = Field(default=None, max_length=100)
+    schedule: str | None = Field(default=None)
+    agentName: str | None = Field(default=None, max_length=100)
+    cancellationPolicy: str | None = Field(default=None)
+    contactEmail: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=100)
+    system_prompt_generated: str | None = Field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -147,3 +160,21 @@ class OnboardingAnswersUpdate(BaseModel):
     """Body for PUT /agents/me/onboarding. Replaces the full answers document."""
 
     answers: OnboardingAnswers
+
+
+class LLMProviderUpdate(BaseModel):
+    """Body for PATCH /agents/me/llm-provider."""
+
+    llm_provider: str = Field(..., min_length=2, max_length=50)
+    llm_model: str = Field(..., min_length=2, max_length=100)
+
+
+class AgentConfigUpdate(BaseModel):
+    """Body for PATCH /agents/me to update prompt, LLM provider, status, or metadata."""
+
+    system_prompt_generated: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    status: str | None = None
+    onboarding_answers: dict | None = None
+    company_name: str | None = None

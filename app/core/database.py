@@ -19,7 +19,9 @@ Usage:
 """
 
 from collections.abc import AsyncGenerator
+import uuid
 
+from fastapi import Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -101,7 +103,7 @@ _SuperadminSessionFactory = async_sessionmaker(
 # ---------------------------------------------------------------------------
 
 
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_db_session(request: Request = None) -> AsyncGenerator[AsyncSession, None]:  # type: ignore[assignment]
     """
     Yield an async database session for a single request.
 
@@ -112,6 +114,17 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
     async with AsyncSessionFactory() as session:
         try:
+            if request is not None:
+                org_id = getattr(request.state, "organization_id", None)
+                if org_id:
+                    try:
+                        valid_org_uuid = str(uuid.UUID(str(org_id)))
+                        await session.execute(
+                            text("SELECT set_config('app.current_organization_id', :org_id, true)"),
+                            {"org_id": valid_org_uuid},
+                        )
+                    except (ValueError, Exception):
+                        pass
             yield session
             await session.commit()
         except Exception:

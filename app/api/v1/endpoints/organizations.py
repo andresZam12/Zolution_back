@@ -112,6 +112,31 @@ async def get_my_organization(
 
 
 @router.patch(
+    "/me",
+    response_model=OrganizationResponse,
+    summary="Update current user's organization",
+    description="Update the authenticated owner's organization name and optional slug.",
+)
+async def update_my_organization(
+    data: OrganizationUpdate,
+    user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> OrganizationResponse:
+    if user.organization_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint requires an organization context.",
+        )
+    if not user.is_superadmin and user.role != UserRole.OWNER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only organization owners can update organization details.",
+        )
+    org = await _service.update(user.organization_id, data, db)
+    return OrganizationResponse.model_validate(org)
+
+
+@router.patch(
     "/{org_id}",
     response_model=OrganizationResponse,
     summary="Update organization",

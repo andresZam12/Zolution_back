@@ -19,11 +19,12 @@ import logging
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models import AgentConfig
-from app.agents.schemas import AgentStatusResponse, OnboardingAnswers
+from app.agents.schemas import AgentConfigUpdate, AgentStatusResponse, OnboardingAnswers
+from app.tenants.models import Organization
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +41,43 @@ class AgentConfigService:
     ) -> AgentConfig:
         """
         Fetch the agent config for an organization.
+        Auto-provisions one if the organization exists in DB but lacks a config row.
 
         Raises:
             HTTPException 404: No agent config found for the organization.
         """
+        try:
+            await db.execute(
+                text("SELECT set_config('app.current_organization_id', :org_id, true)"),
+                {"org_id": str(organization_id)},
+            )
+        except Exception:
+            pass
+
         result = await db.execute(
             select(AgentConfig).where(AgentConfig.organization_id == organization_id)
         )
         config = result.scalar_one_or_none()
         if config is None:
+            org_res = await db.execute(
+                select(Organization).where(Organization.id == organization_id)
+            )
+            org = org_res.scalar_one_or_none()
+            if org is not None:
+                config = AgentConfig(
+                    organization_id=organization_id,
+                    status="draft",
+                    llm_provider="openai",
+                    llm_model="gpt-4o-mini",
+                    onboarding_answers={
+                        "companyName": org.name,
+                        "business_name": org.name,
+                    },
+                )
+                db.add(config)
+                await db.flush()
+                return config
+
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No agent config found for organization {organization_id}.",
@@ -87,18 +116,107 @@ class AgentConfigService:
         db: AsyncSession,
     ) -> AgentConfig:
         """
-        Replace the onboarding answers document.
+        Replace or merge the onboarding answers document.
 
-        Persists as JSONB. Does NOT auto-generate the prompt — the business
-        owner calls /generate-prompt explicitly when satisfied with the answers.
+        Persists as JSONB and synchronizes Organization.name if companyName or
+        business_name is provided. If system_prompt_generated is included in the
+        answers payload, also stores it and marks the agent active.
 
         Raises:
             HTTPException 404: No agent config for this org.
         """
         config = await self.get_for_org(organization_id, db)
-        config.onboarding_answers = answers.model_dump(exclude_none=False)
+        dumped = answers.model_dump(exclude_none=False)
+
+        # Normalize aliases between frontend camelCase and backend snake_case
+        company_name = dumped.get("business_name") or dumped.get("companyName")
+        industry = dumped.get("business_type") or dumped.get("industry")
+        agent_name = dumped.get("agent_name") or dumped.get("agentName")
+
+        if company_name:
+            dumped["business_name"] = company_name
+            dumped["companyName"] = company_name
+        if industry:
+            dumped["business_type"] = industry
+            dumped["industry"] = industry
+        if agent_name:
+            dumped["agent_name"] = agent_name
+            dumped["agentName"] = agent_name
+
+        existing_answers = dict(config.onboarding_answers or {})
+        existing_answers.update({k: v for k, v in dumped.items() if v is not None or k in ("business_name", "business_type", "services", "hours", "agent_name")})
+        config.onboarding_answers = existing_answers
+
+        if dumped.get("system_prompt_generated"):
+            config.system_prompt_generated = dumped["system_prompt_generated"]
+            config.status = "active"
+
+        # Also synchronize Organization.name in PostgreSQL when company_name is provided
+        if company_name and len(company_name.strip()) >= 2:
+            org_res = await db.execute(
+                select(Organization).where(Organization.id == organization_id)
+            )
+            org = org_res.scalar_one_or_none()
+            if org:
+                org.name = company_name.strip()
+                db.add(org)
+
         db.add(config)
         logger.info("Onboarding answers updated for org %s", organization_id)
+        return config
+
+    async def update_config(
+        self,
+        organization_id: UUID,
+        data: AgentConfigUpdate,
+        db: AsyncSession,
+    ) -> AgentConfig:
+        """
+        Partially update the AgentConfig (system prompt, LLM provider/model, status,
+        onboarding_answers metadata) and optionally Organization.name.
+        """
+        config = await self.get_for_org(organization_id, db)
+
+        if data.system_prompt_generated is not None:
+            config.system_prompt_generated = data.system_prompt_generated
+        if data.llm_provider is not None:
+            from app.llm_providers.factory import SUPPORTED_PROVIDERS
+
+            if data.llm_provider not in SUPPORTED_PROVIDERS:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Provider '{data.llm_provider}' is not supported. "
+                    f"Supported: {sorted(SUPPORTED_PROVIDERS)}",
+                )
+            config.llm_provider = data.llm_provider
+        if data.llm_model is not None:
+            config.llm_model = data.llm_model
+        if data.status is not None and data.status in ("active", "draft", "suspended"):
+            config.status = data.status
+
+        if data.onboarding_answers is not None:
+            merged = dict(config.onboarding_answers or {})
+            merged.update(data.onboarding_answers)
+            if merged.get("companyName") and not merged.get("business_name"):
+                merged["business_name"] = merged["companyName"]
+            if merged.get("industry") and not merged.get("business_type"):
+                merged["business_type"] = merged["industry"]
+            config.onboarding_answers = merged
+
+        new_org_name = data.company_name or (
+            data.onboarding_answers.get("companyName") if data.onboarding_answers else None
+        )
+        if new_org_name and len(new_org_name.strip()) >= 2:
+            org_res = await db.execute(
+                select(Organization).where(Organization.id == organization_id)
+            )
+            org = org_res.scalar_one_or_none()
+            if org:
+                org.name = new_org_name.strip()
+                db.add(org)
+
+        db.add(config)
+        logger.info("AgentConfig updated for org %s", organization_id)
         return config
 
     async def generate_system_prompt(
@@ -217,18 +335,18 @@ def _is_onboarding_complete(answers: dict) -> bool:
     Validate that minimum required onboarding fields are present.
 
     Required fields for a valid system prompt:
-    - business_name
-    - business_type
+    - business_name or companyName
+    - business_type or industry
     - services (at least one)
-    - hours (at least one day)
-    - agent_name
+    - hours or schedule (at least one)
+    - agent_name or agentName
     """
     return bool(
-        answers.get("business_name")
-        and answers.get("business_type")
+        (answers.get("business_name") or answers.get("companyName"))
+        and (answers.get("business_type") or answers.get("industry"))
         and answers.get("services")
-        and answers.get("hours")
-        and answers.get("agent_name")
+        and (answers.get("hours") or answers.get("schedule"))
+        and (answers.get("agent_name") or answers.get("agentName"))
     )
 
 
@@ -236,6 +354,9 @@ def _build_services_block(answers: OnboardingAnswers) -> str:
     """Format the services list for the system prompt."""
     if not answers.services:
         return "- (No services configured)"
+
+    if isinstance(answers.services, str):
+        return answers.services.strip()
 
     lines: list[str] = []
     for svc in answers.services:
@@ -251,6 +372,10 @@ def _build_services_block(answers: OnboardingAnswers) -> str:
 
 def _build_hours_block(answers: OnboardingAnswers) -> str:
     """Format the operating hours for the system prompt."""
+    if isinstance(answers.hours, str) and answers.hours.strip():
+        return answers.hours.strip()
+    if answers.schedule and answers.schedule.strip() and not answers.hours:
+        return answers.schedule.strip()
     if not answers.hours:
         return "- (No hours configured)"
 
