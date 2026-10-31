@@ -339,8 +339,7 @@ async def verify_code_and_register(
             email=user.email,
             role=user.role,
             is_verified=user.is_verified,
-            name=google_name,
-            picture=google_picture,
+            name=email.split("@")[0],
         ),
         organization=OrganizationProfileResponse(
             id=str(org.id),
@@ -618,6 +617,8 @@ async def google_auth_callback(
             email=user.email,
             role=user.role,
             is_verified=user.is_verified,
+            name=google_name,
+            picture=google_picture,
         ),
         organization=OrganizationProfileResponse(
             id=str(org.id) if org else str(uuid.uuid4()),
