@@ -128,6 +128,7 @@ class Settings(BaseSettings):
     # LLM Providers (all optional — only fill what you use)
     # -------------------------------------------------------------------------
     ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_WORKSPACE_ID: str = ""
     GOOGLE_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
 

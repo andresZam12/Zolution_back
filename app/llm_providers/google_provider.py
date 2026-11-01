@@ -40,16 +40,16 @@ from app.llm_providers.exceptions import (
 
 logger = logging.getLogger(__name__)
 
-GEMINI_2_0_FLASH = "gemini-2.0-flash"
-GEMINI_1_5_FLASH = "gemini-1.5-flash"
+GEMINI_3_8_FLASH = "gemini-3.8-flash"
+GEMINI_FLASH_LATEST = "gemini-flash-latest"
 
 
 def _normalize_model_name(model: str) -> str:
     cleaned = (model or "").strip().lower()
-    if not cleaned or "2.5" in cleaned or "2.0" in cleaned or cleaned == "gemini-flash":
-        return GEMINI_2_0_FLASH
+    if not cleaned or "2.0" in cleaned or "2.5" in cleaned or "3.8" in cleaned or "flash" in cleaned:
+        return GEMINI_3_8_FLASH
     if "pro" in cleaned:
-        return "gemini-1.5-pro"
+        return "gemini-pro-latest"
     return cleaned
 
 
@@ -59,16 +59,16 @@ class GoogleProvider(LLMProvider):
 
     Args:
         api_key: Google AI Studio API key. Falls back to `GOOGLE_API_KEY` env var.
-        model:   Model identifier. Defaults to gemini-2.0-flash.
+        model:   Model identifier. Defaults to gemini-3.8-flash.
     """
 
     PROVIDER_NAME = "google"
-    DEFAULT_MODEL = GEMINI_2_0_FLASH
+    DEFAULT_MODEL = GEMINI_3_8_FLASH
 
     def __init__(
         self,
         api_key: str = "",
-        model: str = GEMINI_2_0_FLASH,
+        model: str = GEMINI_3_8_FLASH,
     ) -> None:
         if not api_key:
             import os
@@ -175,13 +175,13 @@ class GoogleProvider(LLMProvider):
         try:
             response = await model.generate_content_async(google_msgs)
         except Exception as exc:
-            # If 2.0 flash failed with 404, retry with 1.5 flash
-            if "not found" in str(exc).lower() and self._model_name != GEMINI_1_5_FLASH:
-                logger.info("Gemini %s not found; falling back to %s", self._model_name, GEMINI_1_5_FLASH)
+            # If 3.8 flash failed with not found/available, retry with gemini-flash-latest
+            if ("not found" in str(exc).lower() or "no longer available" in str(exc).lower()) and self._model_name != GEMINI_FLASH_LATEST:
+                logger.info("Gemini %s failed; falling back to %s", self._model_name, GEMINI_FLASH_LATEST)
                 try:
-                    fallback_model = self._get_model(system_prompt, temperature, max_tokens, GEMINI_1_5_FLASH)
+                    fallback_model = self._get_model(system_prompt, temperature, max_tokens, GEMINI_FLASH_LATEST)
                     response = await fallback_model.generate_content_async(google_msgs)
-                    self._model_name = GEMINI_1_5_FLASH
+                    self._model_name = GEMINI_FLASH_LATEST
                 except Exception as fb_exc:
                     raise self._map_exception(fb_exc, self.PROVIDER_NAME) from fb_exc
             else:

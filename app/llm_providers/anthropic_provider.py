@@ -88,7 +88,12 @@ class AnthropicProvider(LLMProvider):
                 provider=self.PROVIDER_NAME,
             )
 
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        import os
+
+        workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip().strip('"\'')
+        headers = {"anthropic-workspace-id": workspace_id} if workspace_id else None
+
+        self._client = anthropic.AsyncAnthropic(api_key=api_key, default_headers=headers)
         self._model = _normalize_anthropic_model(model)
         self._enable_caching = enable_caching
 
@@ -140,15 +145,22 @@ class AnthropicProvider(LLMProvider):
     @staticmethod
     def _map_exception(exc: anthropic.APIError, provider: str) -> LLMProviderError:
         """Map Anthropic SDK exceptions to domain exceptions."""
+        err_msg = str(exc)
+        if "anthropic-workspace-id" in err_msg.lower():
+            return LLMProviderAuthError(
+                "La clave de Anthropic requiere especificar Workspace ID. Define ANTHROPIC_WORKSPACE_ID o usa una API key creada dentro de un Workspace.",
+                provider=provider,
+                status_code=400,
+            )
         if isinstance(exc, anthropic.AuthenticationError):
-            return LLMProviderAuthError(str(exc), provider=provider, status_code=401)
+            return LLMProviderAuthError(err_msg, provider=provider, status_code=401)
         if isinstance(exc, anthropic.RateLimitError):
-            return LLMProviderRateLimitError(str(exc), provider=provider, status_code=429)
+            return LLMProviderRateLimitError(err_msg, provider=provider, status_code=429)
         if isinstance(exc, anthropic.APITimeoutError):
-            return LLMProviderTimeoutError(str(exc), provider=provider)
+            return LLMProviderTimeoutError(err_msg, provider=provider)
         if isinstance(exc, anthropic.BadRequestError):
-            return LLMProviderContentFilterError(str(exc), provider=provider, status_code=400)
-        return LLMProviderError(str(exc), provider=provider)
+            return LLMProviderContentFilterError(err_msg, provider=provider, status_code=400)
+        return LLMProviderError(err_msg, provider=provider)
 
     async def generate(
         self,

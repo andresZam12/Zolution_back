@@ -330,11 +330,14 @@ async def simulate_conversation_turn(
         # 7. Candidate LLM providers (configured one first, then fallbacks)
         candidates: list[tuple[str, str]] = []
         if agent_cfg and agent_cfg.llm_provider:
-            candidates.append((agent_cfg.llm_provider, agent_cfg.llm_model or ""))
+            pref_model = agent_cfg.llm_model or ""
+            if agent_cfg.llm_provider == "google" and (not pref_model or "2.0" in pref_model or "2.5" in pref_model):
+                pref_model = "gemini-3.8-flash"
+            candidates.append((agent_cfg.llm_provider, pref_model))
 
         for pname, pmodel in (
-            ("google", "gemini-2.0-flash"),
-            ("google", "gemini-1.5-flash"),
+            ("google", "gemini-3.8-flash"),
+            ("google", "gemini-flash-latest"),
             ("openai", "gpt-4o-mini"),
             ("anthropic", "claude-3-5-haiku-latest"),
         ):
