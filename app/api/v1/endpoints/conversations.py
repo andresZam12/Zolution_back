@@ -3,6 +3,7 @@ Conversation API endpoints for the tenant dashboard and Live WhatsApp Simulator.
 """
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -231,37 +232,128 @@ async def simulate_conversation_turn(
     conversation.messages.append(user_msg)
     await db.flush()
 
-    system_prompt = (
+    base_prompt = (
         payload.system_prompt_override
         or agent_cfg.system_prompt_generated
         or f"Eres {agent_name}, asistente virtual de {org_name}."
+    )
+    now_co = datetime.utcnow() - timedelta(hours=5)
+    tomorrow = (now_co + timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        avail_info = str(await GoogleCalendarService(db, org_id_str).get_availability(tomorrow))
+    except Exception:
+        avail_info = f"Atendemos {schedule_text}."
+
+    system_prompt = (
+        f"{base_prompt}\n\n"
+        "--- CONTEXTO EN TIEMPO REAL (no lo menciones como 'contexto') ---\n"
+        f"Negocio: {org_name}\n"
+        f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
+        f"Servicios: {services_text}\n"
+        f"Horario: {schedule_text}\n"
+        f"Disponibilidad de mañana ({tomorrow}): {avail_info}\n\n"
+        "REGLAS DE RESPUESTA:\n"
+        "- Responde siempre en español, de forma natural, cálida y BREVE (máximo 3 frases), como en WhatsApp.\n"
+        "- Responde a lo que el cliente dice. Si solo saluda, saluda y pregunta en qué ayudar.\n"
+        "- No inventes servicios, precios ni horarios que no estén arriba.\n"
+        "- Para agendar necesitas: nombre del cliente, servicio, fecha y hora. Pídelos de a poco.\n"
+        "- SOLO cuando el cliente confirme todos los datos, termina tu mensaje con este código exacto "
+        "(sin explicarlo): [[AGENDAR|YYYY-MM-DD|HH:MM|Nombre del cliente|Servicio]]\n"
     )
 
     reply_text = ""
     tool_called: Optional[str] = None
     appointment_created = False
+    lower_msg = payload.message.lower()
 
-    # Try real LLM provider if API key is configured
-    try:
-        factory = LLMProviderFactory()
-        provider = factory.get_provider(
-            agent_cfg.llm_provider,
-            agent_cfg.llm_model,
-            system_prompt,
-        )
-        llm_history = [
-            LLMConversationMessage(role=m.role, content=m.content)
-            for m in conversation.messages[-10:]
-        ]
-        llm_resp = await provider.generate(
-            system_prompt=system_prompt,
-            messages=llm_history,
-        )
-        reply_text = llm_resp.content
-    except Exception:
-        # Context-aware tenant agent engine with tool calling
-        lower = payload.message.lower()
-        tomorrow = (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%d")
+    # Try every configured LLM provider (preferred first, then any other with an API key)
+    candidates: list[tuple[str, str]] = []
+    for pname, pmodel in (
+        (agent_cfg.llm_provider, agent_cfg.llm_model),
+        ("google", ""),
+        ("openai", ""),
+        ("anthropic", ""),
+    ):
+        if pname and pname not in [c[0] for c in candidates]:
+            candidates.append((pname, pmodel if pname == agent_cfg.llm_provider else ""))
+
+    llm_history = [
+        LLMConversationMessage(role=m.role, content=m.content)
+        for m in conversation.messages[-10:]
+        if m.content and m.content.strip()
+    ]
+    for pname, pmodel in candidates:
+        try:
+            provider = LLMProviderFactory().get_provider(pname, pmodel, system_prompt)
+            llm_resp = await provider.generate(
+                system_prompt=system_prompt,
+                messages=llm_history,
+                temperature=0.4,
+                max_tokens=400,
+            )
+            reply_text = (llm_resp.content or "").strip()
+            if reply_text:
+                break
+        except Exception as exc:
+            logger.warning("LLM provider %s unavailable in simulator: %s", pname, exc)
+
+    if reply_text:
+        if any(kw in lower_msg for kw in ("cita", "disponib", "horario", "espacio", "turno", "agendar")):
+            tool_called = f"check_availability(date='{tomorrow}')"
+        m = re.search(r"\[\[AGENDAR\|([^|\]]+)\|([^|\]]+)\|([^|\]]*)\|([^\]]*)\]\]", reply_text)
+        if m:
+            b_date, b_time, b_name, b_service = (g.strip() for g in m.groups())
+            reply_text = re.sub(r"\[\[AGENDAR[^\]]*\]\]", "", reply_text).strip()
+            try:
+                hh, mm = (int(x) for x in b_time.split(":")[:2])
+                end_dt = datetime(2026, 1, 1, hh, mm) + timedelta(minutes=45)
+                start_iso = f"{b_date}T{hh:02d}:{mm:02d}:00-05:00"
+                end_iso = f"{b_date}T{end_dt.hour:02d}:{end_dt.minute:02d}:00-05:00"
+                event_id = f"pg_sim_{uuid.uuid4().hex[:7]}"
+                html_link = None
+                try:
+                    cal_res = await GoogleCalendarService(db, org_id_str).create_appointment(
+                        customer_name=b_name or customer_name,
+                        customer_phone=customer_phone,
+                        start_time=start_iso,
+                        end_time=end_iso,
+                        notes=f"{b_service} - agendada por IA ({org_name})",
+                    )
+                    if isinstance(cal_res, dict) and cal_res.get("success"):
+                        event_id = cal_res.get("event_id") or event_id
+                        html_link = cal_res.get("html_link")
+                except Exception as exc:
+                    logger.warning("Calendar create failed in simulator: %s", exc)
+                existing_apts = ans.get("appointments")
+                if not isinstance(existing_apts, list):
+                    existing_apts = []
+                existing_apts.insert(
+                    0,
+                    {
+                        "id": f"apt-{uuid.uuid4().hex[:10]}",
+                        "patientName": b_name or customer_name,
+                        "phone": customer_phone,
+                        "service": b_service or f"Cita por WhatsApp ({org_name})",
+                        "date": b_date,
+                        "time": f"{hh:02d}:{mm:02d} (45 min)",
+                        "status": "confirmed",
+                        "googleEventId": event_id,
+                        "htmlLink": html_link,
+                        "createdAt": datetime.utcnow().isoformat() + "Z",
+                    },
+                )
+                ans["appointments"] = existing_apts
+                agent_cfg.onboarding_answers = ans
+                flag_modified(agent_cfg, "onboarding_answers")
+                db.add(agent_cfg)
+                appointment_created = True
+                tool_called = f"book_appointment(date='{b_date}', time='{b_time}')"
+            except Exception as exc:
+                logger.warning("Could not persist LLM booking: %s", exc)
+
+    if not reply_text:
+        # Last-resort rule-based engine (only when no LLM provider is configured)
+        lower = lower_msg
 
         if any(
             kw in lower
