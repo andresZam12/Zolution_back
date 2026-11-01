@@ -50,6 +50,8 @@ class SimulateMessageResponse(BaseModel):
     reply: str
     tool_called: Optional[str] = None
     appointment_created: bool = False
+    used_provider: Optional[str] = None
+    llm_errors: list[str] = []
 
 
 def _require_org_id(user: UserContext) -> str:
@@ -270,18 +272,21 @@ async def simulate_conversation_turn(
     candidates: list[tuple[str, str]] = []
     for pname, pmodel in (
         (agent_cfg.llm_provider, agent_cfg.llm_model),
-        ("google", ""),
-        ("openai", ""),
-        ("anthropic", ""),
+        ("google", "gemini-2.0-flash"),
+        ("google", "gemini-2.5-flash"),
+        ("openai", "gpt-4o-mini"),
+        ("anthropic", "claude-3-5-haiku-latest"),
     ):
-        if pname and pname not in [c[0] for c in candidates]:
-            candidates.append((pname, pmodel if pname == agent_cfg.llm_provider else ""))
+        if pname and (pname, pmodel or "") not in candidates:
+            candidates.append((pname, pmodel or ""))
 
     llm_history = [
         LLMConversationMessage(role=m.role, content=m.content)
         for m in conversation.messages[-10:]
         if m.content and m.content.strip()
     ]
+    llm_errors: list[str] = []
+    used_provider: Optional[str] = None
     for pname, pmodel in candidates:
         try:
             provider = LLMProviderFactory().get_provider(pname, pmodel, system_prompt)
@@ -289,13 +294,17 @@ async def simulate_conversation_turn(
                 system_prompt=system_prompt,
                 messages=llm_history,
                 temperature=0.4,
-                max_tokens=400,
+                max_tokens=1200,
             )
             reply_text = (llm_resp.content or "").strip()
             if reply_text:
+                used_provider = f"{pname}/{pmodel or 'default'}"
                 break
+            llm_errors.append(f"{pname}/{pmodel}: respuesta vacía")
         except Exception as exc:
-            logger.warning("LLM provider %s unavailable in simulator: %s", pname, exc)
+            msg = re.sub(r"(sk-|AIza)[A-Za-z0-9_\-]+", "[clave]", str(exc))[:220]
+            llm_errors.append(f"{pname}/{pmodel}: {type(exc).__name__}: {msg}")
+            logger.warning("LLM provider %s/%s unavailable in simulator: %s", pname, pmodel, msg)
 
     if reply_text:
         if any(kw in lower_msg for kw in ("cita", "disponib", "horario", "espacio", "turno", "agendar")):
@@ -461,4 +470,6 @@ async def simulate_conversation_turn(
         reply=reply_text,
         tool_called=tool_called,
         appointment_created=appointment_created,
+        used_provider=used_provider,
+        llm_errors=llm_errors,
     )
