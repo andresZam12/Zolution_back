@@ -58,6 +58,8 @@ class OpenAIProvider(LLMProvider):
 
             api_key = os.getenv("OPENAI_API_KEY", "")
 
+        api_key = api_key.strip().strip('"\'')
+
         if not api_key:
             raise LLMProviderNotConfiguredError(
                 "OPENAI_API_KEY is not set.",
@@ -65,7 +67,7 @@ class OpenAIProvider(LLMProvider):
             )
 
         self._client = openai.AsyncOpenAI(api_key=api_key)
-        self._model = model
+        self._model = (model or "").strip() or GPT_4O_MINI
 
     @staticmethod
     def _build_messages(
@@ -78,9 +80,27 @@ class OpenAIProvider(LLMProvider):
         OpenAI places the system prompt as the first message with role "system".
         Conversation history follows in chronological order.
         """
+        clean_turns: list[dict] = []
+        for msg in messages:
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            role = "assistant" if msg.role in ("assistant", "model") else "user"
+
+            if not clean_turns:
+                clean_turns.append({"role": role, "content": content})
+            else:
+                if clean_turns[-1]["role"] == role:
+                    clean_turns[-1]["content"] = f"{clean_turns[-1]['content']}\n\n{content}"
+                else:
+                    clean_turns.append({"role": role, "content": content})
+
+        if not clean_turns:
+            clean_turns = [{"role": "user", "content": "Hola"}]
+
         return [
             {"role": "system", "content": system_prompt},
-            *[{"role": msg.role, "content": msg.content} for msg in messages],
+            *clean_turns,
         ]
 
     @staticmethod

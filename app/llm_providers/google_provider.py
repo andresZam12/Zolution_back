@@ -40,8 +40,17 @@ from app.llm_providers.exceptions import (
 
 logger = logging.getLogger(__name__)
 
-GEMINI_2_5_FLASH = "gemini-2.5-flash"
 GEMINI_2_0_FLASH = "gemini-2.0-flash"
+GEMINI_1_5_FLASH = "gemini-1.5-flash"
+
+
+def _normalize_model_name(model: str) -> str:
+    cleaned = (model or "").strip().lower()
+    if not cleaned or "2.5" in cleaned or "2.0" in cleaned or cleaned == "gemini-flash":
+        return GEMINI_2_0_FLASH
+    if "pro" in cleaned:
+        return "gemini-1.5-pro"
+    return cleaned
 
 
 class GoogleProvider(LLMProvider):
@@ -50,21 +59,23 @@ class GoogleProvider(LLMProvider):
 
     Args:
         api_key: Google AI Studio API key. Falls back to `GOOGLE_API_KEY` env var.
-        model:   Model identifier. Defaults to gemini-2.5-flash.
+        model:   Model identifier. Defaults to gemini-2.0-flash.
     """
 
     PROVIDER_NAME = "google"
-    DEFAULT_MODEL = GEMINI_2_5_FLASH
+    DEFAULT_MODEL = GEMINI_2_0_FLASH
 
     def __init__(
         self,
         api_key: str = "",
-        model: str = GEMINI_2_5_FLASH,
+        model: str = GEMINI_2_0_FLASH,
     ) -> None:
         if not api_key:
             import os
 
             api_key = os.getenv("GOOGLE_API_KEY", "")
+
+        api_key = api_key.strip().strip('"\'')
 
         if not api_key:
             raise LLMProviderNotConfiguredError(
@@ -73,7 +84,7 @@ class GoogleProvider(LLMProvider):
             )
 
         genai.configure(api_key=api_key)
-        self._model_name = model
+        self._model_name = _normalize_model_name(model)
         self._generation_config_defaults = {
             "candidate_count": 1,
         }
@@ -83,10 +94,11 @@ class GoogleProvider(LLMProvider):
         system_prompt: str,
         temperature: float,
         max_tokens: int,
+        model_name: str | None = None,
     ) -> genai.GenerativeModel:
         """Create a GenerativeModel instance with system instruction and config."""
         return genai.GenerativeModel(
-            model_name=self._model_name,
+            model_name=model_name or self._model_name,
             system_instruction=system_prompt,
             generation_config=genai.GenerationConfig(
                 temperature=temperature,
@@ -100,15 +112,35 @@ class GoogleProvider(LLMProvider):
         """
         Convert ConversationMessage list to Google's `contents` format.
 
-        Google uses "model" for assistant turns — not "assistant".
+        Google Gemini requirements:
+        1. First turn MUST be from 'user'.
+        2. Turns MUST alternate between 'user' and 'model'.
+        3. Consecutive turns with the same role must be merged.
+        4. Cannot be empty.
         """
-        return [
-            {
-                "role": "model" if msg.role == "assistant" else "user",
-                "parts": [{"text": msg.content}],
-            }
-            for msg in messages
-        ]
+        clean_turns: list[dict] = []
+        for msg in messages:
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            role = "model" if msg.role in ("assistant", "model") else "user"
+
+            if not clean_turns:
+                # First turn must be user
+                if role != "user":
+                    continue
+                clean_turns.append({"role": "user", "parts": [{"text": content}]})
+            else:
+                if clean_turns[-1]["role"] == role:
+                    prev_text = clean_turns[-1]["parts"][0]["text"]
+                    clean_turns[-1]["parts"] = [{"text": f"{prev_text}\n\n{content}"}]
+                else:
+                    clean_turns.append({"role": role, "parts": [{"text": content}]})
+
+        if not clean_turns:
+            clean_turns = [{"role": "user", "parts": [{"text": "Hola"}]}]
+
+        return clean_turns
 
     @staticmethod
     def _map_exception(exc: Exception, provider: str) -> LLMProviderError:
@@ -136,34 +168,66 @@ class GoogleProvider(LLMProvider):
         if tools:
             logger.warning("Tool calling not yet implemented for Gemini in this MVP.")
 
+        google_msgs = self._to_google_messages(messages)
         model = self._get_model(system_prompt, temperature, max_tokens)
-        try:
-            response = await model.generate_content_async(self._to_google_messages(messages))
-        except Exception as exc:
-            raise self._map_exception(exc, self.PROVIDER_NAME) from exc
+        response = None
 
-        # Handle content filtering (Gemini may return empty candidates)
-        if not response.candidates or not response.text:
+        try:
+            response = await model.generate_content_async(google_msgs)
+        except Exception as exc:
+            # If 2.0 flash failed with 404, retry with 1.5 flash
+            if "not found" in str(exc).lower() and self._model_name != GEMINI_1_5_FLASH:
+                logger.info("Gemini %s not found; falling back to %s", self._model_name, GEMINI_1_5_FLASH)
+                try:
+                    fallback_model = self._get_model(system_prompt, temperature, max_tokens, GEMINI_1_5_FLASH)
+                    response = await fallback_model.generate_content_async(google_msgs)
+                    self._model_name = GEMINI_1_5_FLASH
+                except Exception as fb_exc:
+                    raise self._map_exception(fb_exc, self.PROVIDER_NAME) from fb_exc
+            else:
+                raise self._map_exception(exc, self.PROVIDER_NAME) from exc
+
+        # Handle content extraction safely
+        reply_text = ""
+        try:
+            if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                part_texts = [
+                    getattr(p, "text", "") for p in response.candidates[0].content.parts
+                    if getattr(p, "text", None)
+                ]
+                reply_text = "".join(part_texts).strip()
+            if not reply_text and hasattr(response, "text"):
+                reply_text = (response.text or "").strip()
+        except Exception:
+            try:
+                reply_text = (response.text or "").strip()
+            except Exception:
+                reply_text = ""
+
+        if not reply_text:
             raise LLMProviderContentFilterError(
-                "Gemini returned no content (possible content filter).",
+                "Gemini returned no text content (possible content filter).",
                 provider=self.PROVIDER_NAME,
             )
 
-        usage = response.usage_metadata
+        usage = getattr(response, "usage_metadata", None)
+        in_tokens = getattr(usage, "prompt_token_count", 0) or 0 if usage else 0
+        out_tokens = getattr(usage, "candidates_token_count", 0) or 0 if usage else 0
+
         logger.debug(
             "Google response | model=%s in=%d out=%d",
             self._model_name,
-            usage.prompt_token_count,
-            usage.candidates_token_count,
+            in_tokens,
+            out_tokens,
         )
 
         return LLMResponse(
-            content=response.text,
-            input_tokens=usage.prompt_token_count,
-            output_tokens=usage.candidates_token_count,
+            content=reply_text,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
             provider=self.PROVIDER_NAME,
             model=self._model_name,
-            cached_tokens=0,  # Google does not offer prompt caching at this time
+            cached_tokens=0,
         )
 
     async def stream(
