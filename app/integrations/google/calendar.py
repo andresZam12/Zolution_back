@@ -159,20 +159,25 @@ class GoogleCalendarService:
             },
         }
 
+        import logging
+        logger = logging.getLogger(__name__)
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, headers=headers, json=data)
 
             if response.status_code in (200, 201):
                 event = response.json()
+                logger.info("Google Calendar created event successfully: %s", event.get("id"))
                 return {
                     "success": True,
                     "event_id": event.get("id", ""),
                     "html_link": event.get("htmlLink", ""),
                     "message": f"Appointment successfully scheduled! Calendar Link: {event.get('htmlLink')}",
                 }
+            logger.error("Google Calendar failed [HTTP %d]: %s", response.status_code, response.text)
             return {
                 "success": False,
                 "event_id": "",
                 "html_link": "",
-                "message": f"Failed to schedule appointment: {response.text}",
+                "message": f"Google Calendar HTTP {response.status_code}: {response.text}",
             }

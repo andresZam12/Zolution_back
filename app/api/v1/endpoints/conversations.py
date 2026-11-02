@@ -454,8 +454,36 @@ async def simulate_conversation_turn(
                     elif not is_pm and "AM" in clean_time and hh == 12:
                         hh = 0
 
+                    clean_date = tomorrow
                     date_match = re.search(r"\d{4}-\d{2}-\d{2}", b_date)
-                    clean_date = date_match.group(0) if date_match else tomorrow
+                    if date_match:
+                        clean_date = date_match.group(0)
+                    else:
+                        combined_text = f"{b_date} {lower_msg}".lower()
+                        if "pasado mañana" in combined_text:
+                            clean_date = (now_co + timedelta(days=2)).strftime("%Y-%m-%d")
+                        elif "mañana" in combined_text:
+                            clean_date = tomorrow
+                        elif "hoy" in combined_text:
+                            clean_date = now_co.strftime("%Y-%m-%d")
+                        elif "mierco" in combined_text:
+                            days_ahead = (2 - now_co.weekday()) % 7 or 7
+                            clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+                        elif "jueve" in combined_text:
+                            days_ahead = (3 - now_co.weekday()) % 7 or 7
+                            clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+                        elif "vierne" in combined_text:
+                            days_ahead = (4 - now_co.weekday()) % 7 or 7
+                            clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+                        elif "sabado" in combined_text or "sábado" in combined_text:
+                            days_ahead = (5 - now_co.weekday()) % 7 or 7
+                            clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+                        elif "lunes" in combined_text:
+                            days_ahead = (0 - now_co.weekday()) % 7 or 7
+                            clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+                        elif "martes" in combined_text:
+                            days_ahead = (1 - now_co.weekday()) % 7 or 7
+                            clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
                     end_dt = datetime(2026, 1, 1, hh, mm) + timedelta(minutes=45)
                     start_iso = f"{clean_date}T{hh:02d}:{mm:02d}:00-05:00"
@@ -471,14 +499,19 @@ async def simulate_conversation_turn(
                                 end_time=end_iso,
                                 notes=f"{b_service} - agendada por IA ({org_name})",
                             ),
-                            timeout=4.0,
+                            timeout=6.0,
                         )
                         if isinstance(cal_res, dict) and cal_res.get("success"):
                             event_id = cal_res.get("event_id") or event_id
                             html_link = cal_res.get("html_link")
                             google_calendar_synced = True
+                        else:
+                            cal_err = cal_res.get("message") if isinstance(cal_res, dict) else str(cal_res)
+                            logger.warning("Google Calendar creation unsuccessful: %s", cal_err)
+                            llm_errors.append(f"Google Calendar: {cal_err[:150]}")
                     except Exception as exc:
                         logger.warning("Calendar create failed in simulator: %s", exc)
+                        llm_errors.append(f"Google Calendar: {str(exc)[:150]}")
 
                     if agent_cfg:
                         existing_apts = ans.get("appointments")
