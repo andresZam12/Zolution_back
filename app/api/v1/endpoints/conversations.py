@@ -339,7 +339,8 @@ async def simulate_conversation_turn(
             "- Termina siempre tus oraciones e ideas de forma completa y coherente (máximo 2 a 3 frases breves).\n"
             "- Si el cliente saluda (ej: 'hola', 'buenas'), salúdalo amablemente, preséntate brevemente y pregúntale en qué le puedes colaborar hoy.\n"
             "- Si el cliente consulta disponibilidad o pide cita, dale opciones claras de inmediato (ej: 'Tenemos turnos disponibles a las 10:00 AM o a las 3:30 PM, ¿cuál te queda mejor?').\n"
-            "- OBLIGATORIO: Cuando el cliente confirme explícitamente fecha, hora, nombre y servicio, confirma la cita y pon SIEMPRE al final de tu mensaje el código: "
+            "- OBLIGATORIO: Cuando el cliente elija o confirme una fecha u hora (ej: 'el miércoles a las 4 pm', 'a las 10 am', 'agenda por favor'), "
+            "confirma de inmediato con entusiasmo que su cita ha quedado reservada y coloca SIEMPRE al final de tu mensaje el comando: "
             "[[AGENDAR|YYYY-MM-DD|HH:MM|Nombre del cliente|Servicio]]\n"
         )
 
@@ -414,17 +415,22 @@ async def simulate_conversation_turn(
                 b_date, b_time, b_name, b_service = (g.strip() for g in m.groups())
                 reply_text = re.sub(r"\[\[AGENDAR[^\]]*\]\]", "", reply_text).strip()
             else:
-                # Fallback: check if the assistant confirmed an appointment in natural language
+                # Fallback: check if the assistant or user confirmed an appointment in natural language
                 clean_reply_lower = reply_text.lower()
+                combined_history_lower = " ".join([m.content for m in history_msgs]).lower() + f" {lower_msg} {clean_reply_lower}"
                 is_natural_confirm = any(
-                    w in clean_reply_lower
-                    for w in ("agendada", "confirmada", "te espero", "registrada tu cita", "quedó agendada", "cita programada", "te esperamos")
+                    w in clean_reply_lower or w in lower_msg
+                    for w in (
+                        "agendada", "confirmada", "te espero", "registrada tu cita", "quedó agendada",
+                        "cita programada", "te esperamos", "ya me agendaste", "agendaste", "agendado",
+                        "agendar", "agenda", "perfecto para el", "excelente elección"
+                    )
                 ) and any(
-                    t in clean_reply_lower or t in lower_msg
-                    for t in ("10", "11", "12", "1", "2", "3", "4", "5", "8", "9", "am", "pm", ":00", ":30")
+                    t in combined_history_lower
+                    for t in ("10", "11", "12", "1", "2", "3", "4", "5", "8", "9", "am", "pm", ":00", ":30", "mierco", "martes", "jueve", "vierne", "lunes", "sabado")
                 )
                 if is_natural_confirm:
-                    time_digits = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", f"{clean_reply_lower} {lower_msg}", re.IGNORECASE)
+                    time_digits = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", f"{lower_msg} {clean_reply_lower} {combined_history_lower}", re.IGNORECASE)
                     if time_digits:
                         h_val = int(time_digits.group(1))
                         m_val = int(time_digits.group(2) or 0)
@@ -435,7 +441,7 @@ async def simulate_conversation_turn(
                             h_val = 0
                         b_time = f"{h_val:02d}:{m_val:02d}"
                     else:
-                        b_time = "10:00"
+                        b_time = "16:00"
                     b_date = tomorrow
                     b_name = customer_name
                     b_service = f"Atención ({org_name})"
