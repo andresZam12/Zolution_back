@@ -17,6 +17,7 @@ Model recommendation:
     LLM diagnostic benchmark (Section 5.2).
 """
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 
@@ -145,12 +146,12 @@ class GoogleProvider(LLMProvider):
     @staticmethod
     def _map_exception(exc: Exception, provider: str) -> LLMProviderError:
         """Map Google API exceptions to domain exceptions."""
+        if isinstance(exc, (DeadlineExceeded, TimeoutError, asyncio.TimeoutError)):
+            return LLMProviderTimeoutError(f"Google Gemini timed out: {exc}", provider=provider)
         if isinstance(exc, PermissionDenied):
             return LLMProviderAuthError(str(exc), provider=provider, status_code=403)
         if isinstance(exc, ResourceExhausted):
             return LLMProviderRateLimitError(str(exc), provider=provider, status_code=429)
-        if isinstance(exc, DeadlineExceeded):
-            return LLMProviderTimeoutError(str(exc), provider=provider)
         if isinstance(exc, GoogleAPICallError):
             return LLMProviderError(str(exc), provider=provider)
         return LLMProviderError(str(exc), provider=provider)
@@ -173,14 +174,24 @@ class GoogleProvider(LLMProvider):
         response = None
 
         try:
-            response = await model.generate_content_async(google_msgs)
+            response = await asyncio.wait_for(
+                model.generate_content_async(google_msgs),
+                timeout=12.0,
+            )
         except Exception as exc:
             # If 3.8 flash failed with not found/available, retry with gemini-flash-latest
-            if ("not found" in str(exc).lower() or "no longer available" in str(exc).lower()) and self._model_name != GEMINI_FLASH_LATEST:
-                logger.info("Gemini %s failed; falling back to %s", self._model_name, GEMINI_FLASH_LATEST)
+            if (
+                isinstance(exc, (DeadlineExceeded, TimeoutError, asyncio.TimeoutError))
+                or "not found" in str(exc).lower()
+                or "no longer available" in str(exc).lower()
+            ) and self._model_name != GEMINI_FLASH_LATEST:
+                logger.info("Gemini %s failed or timed out; falling back to %s", self._model_name, GEMINI_FLASH_LATEST)
                 try:
                     fallback_model = self._get_model(system_prompt, temperature, max_tokens, GEMINI_FLASH_LATEST)
-                    response = await fallback_model.generate_content_async(google_msgs)
+                    response = await asyncio.wait_for(
+                        fallback_model.generate_content_async(google_msgs),
+                        timeout=12.0,
+                    )
                     self._model_name = GEMINI_FLASH_LATEST
                 except Exception as fb_exc:
                     raise self._map_exception(fb_exc, self.PROVIDER_NAME) from fb_exc

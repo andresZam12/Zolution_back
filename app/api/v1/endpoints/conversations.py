@@ -2,6 +2,7 @@
 Conversation API endpoints for the tenant dashboard and Live WhatsApp Simulator.
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -303,7 +304,11 @@ async def simulate_conversation_turn(
         now_co = datetime.utcnow() - timedelta(hours=5)
         tomorrow = (now_co + timedelta(days=1)).strftime("%Y-%m-%d")
         try:
-            avail_info = str(await GoogleCalendarService(db, org_id_str).get_availability(tomorrow))
+            avail_info = await asyncio.wait_for(
+                GoogleCalendarService(db, org_id_str).get_availability(tomorrow),
+                timeout=2.0,
+            )
+            avail_info = str(avail_info)
         except Exception:
             avail_info = f"Atendemos {schedule_text}."
 
@@ -313,15 +318,16 @@ async def simulate_conversation_turn(
             f"Negocio: {org_name}\n"
             f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
             f"Servicios: {services_text}\n"
-            f"Horario: {schedule_text}\n"
+            f"Horario de atención: {schedule_text}\n"
             f"Disponibilidad de mañana ({tomorrow}): {avail_info}\n\n"
-            "REGLAS DE RESPUESTA:\n"
-            "- Responde siempre en español, de forma natural, cálida y BREVE (máximo 3 frases), como en WhatsApp.\n"
-            "- Responde a lo que el cliente dice. Si solo saluda, saluda y pregunta en qué ayudar.\n"
-            "- No inventes servicios, precios ni horarios que no estén arriba.\n"
-            "- Para agendar necesitas: nombre del cliente, servicio, fecha y hora. Pídelos de a poco.\n"
-            "- SOLO cuando el cliente confirme todos los datos, termina tu mensaje con este código exacto "
-            "(sin explicarlo): [[AGENDAR|YYYY-MM-DD|HH:MM|Nombre del cliente|Servicio]]\n"
+            "REGLAS OBLIGATORIAS DE RESPUESTA:\n"
+            "- Hablas directamente con un cliente por WhatsApp. Sé siempre muy amable, cálido, conversacional y servicial.\n"
+            "- Si el cliente saluda (ej: 'hola', 'buenas'), salúdalo amablemente, preséntate brevemente y pregúntale en qué le puedes colaborar hoy.\n"
+            "- Si el cliente pregunta por servicios o información, explícaselos con entusiasmo y ofrécele revisar horarios para agendar.\n"
+            "- Si el cliente quiere agendar o consulta disponibilidad, propónle horarios disponibles y pídele amablemente su nombre completo y el servicio.\n"
+            "- Responde siempre en español, de forma natural (máximo 3-4 frases breves), como un excelente recepcionista por WhatsApp.\n"
+            "- SOLO cuando el cliente confirme explícitamente fecha, hora, nombre y servicio, confirma la cita y agrega al final de tu mensaje: "
+            "[[AGENDAR|YYYY-MM-DD|HH:MM|Nombre del cliente|Servicio]]\n"
         )
 
         reply_text = ""
@@ -329,7 +335,7 @@ async def simulate_conversation_turn(
         appointment_created = False
         lower_msg = payload.message.lower()
 
-        # 7. Candidate LLM providers (priority: request override -> saved config -> fallbacks)
+        # 7. Candidate LLM providers (fast path: priority provider first, no unnecessary slow loops)
         candidates: list[tuple[str, str]] = []
         preferred_provider = (
             payload.llm_provider_override
@@ -346,18 +352,17 @@ async def simulate_conversation_turn(
             if not preferred_model or "2.0" in preferred_model or "2.5" in preferred_model:
                 preferred_model = "gemini-3.8-flash"
             candidates.append(("google", preferred_model))
-            candidates.append(("google", "gemini-flash-latest"))
-        elif preferred_provider:
+            if preferred_model != "gemini-flash-latest":
+                candidates.append(("google", "gemini-flash-latest"))
+        elif preferred_provider == "anthropic":
+            candidates.append(("anthropic", preferred_model or "claude-3-5-haiku-latest"))
+            candidates.append(("google", "gemini-3.8-flash"))
+        elif preferred_provider == "openai":
+            candidates.append(("openai", preferred_model or "gpt-4o-mini"))
+            candidates.append(("google", "gemini-3.8-flash"))
+        else:
             candidates.append((preferred_provider, preferred_model))
-
-        for pname, pmodel in (
-            ("google", "gemini-3.8-flash"),
-            ("google", "gemini-flash-latest"),
-            ("openai", "gpt-4o-mini"),
-            ("anthropic", "claude-3-5-haiku-latest"),
-        ):
-            if (pname, pmodel) not in candidates and (pname, "") not in candidates:
-                candidates.append((pname, pmodel))
+            candidates.append(("google", "gemini-3.8-flash"))
 
         llm_errors: list[str] = []
         used_provider: Optional[str] = None
@@ -365,11 +370,14 @@ async def simulate_conversation_turn(
         for pname, pmodel in candidates:
             try:
                 provider = LLMProviderFactory().get_provider(pname, pmodel, system_prompt)
-                llm_resp = await provider.generate(
-                    system_prompt=system_prompt,
-                    messages=history_msgs,
-                    temperature=0.4,
-                    max_tokens=1200,
+                llm_resp = await asyncio.wait_for(
+                    provider.generate(
+                        system_prompt=system_prompt,
+                        messages=history_msgs,
+                        temperature=0.4,
+                        max_tokens=1000,
+                    ),
+                    timeout=14.0,
                 )
                 reply_text = (llm_resp.content or "").strip()
                 if reply_text:
@@ -410,12 +418,15 @@ async def simulate_conversation_turn(
                     event_id = f"pg_sim_{uuid.uuid4().hex[:7]}"
                     html_link = None
                     try:
-                        cal_res = await GoogleCalendarService(db, org_id_str).create_appointment(
-                            customer_name=b_name or customer_name,
-                            customer_phone=customer_phone,
-                            start_time=start_iso,
-                            end_time=end_iso,
-                            notes=f"{b_service} - agendada por IA ({org_name})",
+                        cal_res = await asyncio.wait_for(
+                            GoogleCalendarService(db, org_id_str).create_appointment(
+                                customer_name=b_name or customer_name,
+                                customer_phone=customer_phone,
+                                start_time=start_iso,
+                                end_time=end_iso,
+                                notes=f"{b_service} - agendada por IA ({org_name})",
+                            ),
+                            timeout=4.0,
                         )
                         if isinstance(cal_res, dict) and cal_res.get("success"):
                             event_id = cal_res.get("event_id") or event_id
@@ -487,12 +498,15 @@ async def simulate_conversation_turn(
                 html_link = None
                 cal_service = GoogleCalendarService(db, org_id_str)
                 try:
-                    cal_res = await cal_service.create_appointment(
-                        customer_name=customer_name,
-                        customer_phone=customer_phone,
-                        start_time=start_iso,
-                        end_time=end_iso,
-                        notes=f"Cita agendada por IA ({org_name})",
+                    cal_res = await asyncio.wait_for(
+                        cal_service.create_appointment(
+                            customer_name=customer_name,
+                            customer_phone=customer_phone,
+                            start_time=start_iso,
+                            end_time=end_iso,
+                            notes=f"Cita agendada por IA ({org_name})",
+                        ),
+                        timeout=4.0,
                     )
                     if isinstance(cal_res, dict) and cal_res.get("success"):
                         event_id = cal_res.get("event_id") or event_id

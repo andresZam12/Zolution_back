@@ -54,23 +54,26 @@ class GoogleCalendarService:
 
         if is_expired and cred.refresh_token:
             settings = get_settings()
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(
-                    "https://oauth2.googleapis.com/token",
-                    data={
-                        "client_id": settings.GOOGLE_CLIENT_ID,
-                        "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                        "refresh_token": cred.refresh_token,
-                        "grant_type": "refresh_token",
-                    },
-                )
-                if resp.status_code == 200:
-                    payload = resp.json()
-                    cred.access_token = payload["access_token"]
-                    expires_in = payload.get("expires_in", 3599)
-                    cred.expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
-                    self.db.add(cred)
-                    await self.db.flush()
+            try:
+                async with httpx.AsyncClient(timeout=4.0) as client:
+                    resp = await client.post(
+                        "https://oauth2.googleapis.com/token",
+                        data={
+                            "client_id": settings.GOOGLE_CLIENT_ID,
+                            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                            "refresh_token": cred.refresh_token,
+                            "grant_type": "refresh_token",
+                        },
+                    )
+                    if resp.status_code == 200:
+                        payload = resp.json()
+                        cred.access_token = payload["access_token"]
+                        expires_in = payload.get("expires_in", 3599)
+                        cred.expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+                        self.db.add(cred)
+                        await self.db.flush()
+            except Exception:
+                pass
 
         self._access_token = cred.access_token
         return cred.access_token
@@ -79,7 +82,10 @@ class GoogleCalendarService:
         """
         Check the primary calendar's free/busy status for a given date (YYYY-MM-DD).
         """
-        token = await self._get_access_token()
+        try:
+            token = await self._get_access_token()
+        except Exception:
+            return "Calendario no conectado aún."
 
         try:
             date_obj = datetime.strptime(date_str, "%Y-%m-%d")
@@ -96,20 +102,23 @@ class GoogleCalendarService:
         }
         data = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": "primary"}]}
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(url, headers=headers, json=data)
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                response = await client.post(url, headers=headers, json=data)
 
-            if response.status_code != 200:
-                return "Failed to fetch calendar availability."
+                if response.status_code != 200:
+                    return "Consulta de agenda no disponible temporalmente."
 
-            payload = response.json()
-            busy_list = payload.get("calendars", {}).get("primary", {}).get("busy", [])
-            if not busy_list:
-                return f"El calendario tiene disponibilidad completa el {date_str} entre las 08:00 y las 18:00."
-            busy_summary = ", ".join(
-                f"{b.get('start', '')} a {b.get('end', '')}" for b in busy_list
-            )
-            return f"Horarios ocupados el {date_str}: {busy_summary}. El resto del horario laboral está disponible."
+                payload = response.json()
+                busy_list = payload.get("calendars", {}).get("primary", {}).get("busy", [])
+                if not busy_list:
+                    return f"El calendario tiene disponibilidad completa el {date_str} entre las 08:00 y las 18:00."
+                busy_summary = ", ".join(
+                    f"{b.get('start', '')} a {b.get('end', '')}" for b in busy_list
+                )
+                return f"Horarios ocupados el {date_str}: {busy_summary}. El resto del horario laboral está disponible."
+        except Exception:
+            return "Consulta de agenda no disponible temporalmente."
 
     async def create_appointment(
         self, customer_name: str, customer_phone: str, start_time: str, end_time: str, notes: str = ""
