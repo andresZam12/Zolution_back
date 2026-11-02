@@ -53,6 +53,7 @@ class SimulateMessageResponse(BaseModel):
     reply: str
     tool_called: Optional[str] = None
     appointment_created: bool = False
+    google_calendar_synced: bool = False
     used_provider: Optional[str] = None
     llm_errors: list[str] = []
 
@@ -345,6 +346,7 @@ async def simulate_conversation_turn(
         reply_text = ""
         tool_called: Optional[str] = None
         appointment_created = False
+        google_calendar_synced = False
         lower_msg = payload.message.lower()
 
         # 7. Candidate LLM providers (fast path: priority provider first, no unnecessary slow loops)
@@ -387,8 +389,8 @@ async def simulate_conversation_turn(
                     provider.generate(
                         system_prompt=system_prompt,
                         messages=history_msgs,
-                        temperature=0.35,
-                        max_tokens=1000,
+                        temperature=0.3,
+                        max_tokens=800,
                     ),
                     timeout=14.0,
                 )
@@ -474,6 +476,7 @@ async def simulate_conversation_turn(
                         if isinstance(cal_res, dict) and cal_res.get("success"):
                             event_id = cal_res.get("event_id") or event_id
                             html_link = cal_res.get("html_link")
+                            google_calendar_synced = True
                     except Exception as exc:
                         logger.warning("Calendar create failed in simulator: %s", exc)
 
@@ -626,6 +629,7 @@ async def simulate_conversation_turn(
             reply=reply_text,
             tool_called=tool_called,
             appointment_created=appointment_created,
+            google_calendar_synced=google_calendar_synced,
             used_provider=used_provider,
             llm_errors=llm_errors,
         )
@@ -640,6 +644,7 @@ async def simulate_conversation_turn(
             ),
             tool_called=None,
             appointment_created=False,
+            google_calendar_synced=False,
             used_provider=None,
             llm_errors=[f"Endpoint recovery: {type(top_exc).__name__}: {str(top_exc)[:220]}"],
         )

@@ -3,6 +3,7 @@ Google Calendar integration service with automatic OAuth2 refresh_token rotation
 """
 
 from datetime import UTC, datetime, timedelta
+import uuid
 
 import httpx
 from sqlalchemy import select, text
@@ -28,16 +29,23 @@ class GoogleCalendarService:
         if self._access_token:
             return self._access_token
 
+        org_u = None
+        try:
+            org_u = uuid.UUID(str(self.organization_id))
+        except Exception:
+            pass
+
         try:
             await self.db.execute(
                 text("SELECT set_config('app.current_organization_id', :org_id, true)"),
-                {"org_id": self.organization_id},
+                {"org_id": str(org_u or self.organization_id)},
             )
         except Exception:
             pass
 
+        cond = (IntegrationCredential.organization_id == org_u) if org_u is not None else (IntegrationCredential.organization_id == self.organization_id)
         stmt = select(IntegrationCredential).where(
-            IntegrationCredential.organization_id == self.organization_id,
+            cond,
             IntegrationCredential.provider == "google",
         )
         result = await self.db.execute(stmt)
