@@ -212,11 +212,18 @@ class GoogleProvider(LLMProvider):
             if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                 part_texts = [
                     getattr(p, "text", "") for p in response.candidates[0].content.parts
-                    if getattr(p, "text", None)
+                    if getattr(p, "text", None) and not getattr(p, "thought", False)
                 ]
                 reply_text = "".join(part_texts).strip()
             if not reply_text and hasattr(response, "text"):
                 reply_text = (response.text or "").strip()
+            
+            # Clean any internal thinking or scratchpad leakage (e.g. "* no tool calls...")
+            if reply_text:
+                import re
+                reply_text = re.sub(r"^\s*[\*\-]\s*no tool calls[^\n]*\n*", "", reply_text, flags=re.IGNORECASE)
+                reply_text = re.sub(r"^\s*[\*\-]\s*thought[^\n]*\n*", "", reply_text, flags=re.IGNORECASE)
+                reply_text = reply_text.strip()
         except Exception:
             try:
                 reply_text = (response.text or "").strip()

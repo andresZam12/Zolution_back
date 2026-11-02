@@ -303,7 +303,8 @@ async def simulate_conversation_turn(
         )
         now_co = datetime.utcnow() - timedelta(hours=5)
         tomorrow = (now_co + timedelta(days=1)).strftime("%Y-%m-%d")
-        avail_info = f"Atendemos {schedule_text}."
+        default_avail = f"Atendemos {schedule_text}. Horarios recomendados para ofrecer al cliente: 10:00 AM y 3:30 PM."
+        avail_info = default_avail
         lower_msg = payload.message.lower()
 
         needs_calendar = any(
@@ -316,9 +317,13 @@ async def simulate_conversation_turn(
                     GoogleCalendarService(db, org_id_str).get_availability(tomorrow),
                     timeout=1.5,
                 )
-                avail_info = str(avail_res)
+                res_str = str(avail_res)
+                if res_str and "no disponible" not in res_str.lower() and "no está conectado" not in res_str.lower() and "failed" not in res_str.lower():
+                    avail_info = res_str
+                else:
+                    avail_info = default_avail
             except Exception:
-                avail_info = f"Atendemos {schedule_text}."
+                avail_info = default_avail
 
         system_prompt = (
             f"{base_prompt}\n\n"
@@ -327,13 +332,12 @@ async def simulate_conversation_turn(
             f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
             f"Servicios: {services_text}\n"
             f"Horario de atención: {schedule_text}\n"
-            f"Disponibilidad de mañana ({tomorrow}): {avail_info}\n\n"
+            f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
             "REGLAS OBLIGATORIAS DE RESPUESTA:\n"
             "- Hablas directamente con un cliente por WhatsApp. Sé siempre muy amable, cálido, conversacional y servicial.\n"
+            "- Termina siempre tus oraciones e ideas de forma completa y coherente (máximo 2 a 3 frases breves).\n"
             "- Si el cliente saluda (ej: 'hola', 'buenas'), salúdalo amablemente, preséntate brevemente y pregúntale en qué le puedes colaborar hoy.\n"
-            "- Si el cliente pregunta por servicios o información, explícaselos con entusiasmo y ofrécele revisar horarios para agendar.\n"
-            "- Si el cliente quiere agendar o consulta disponibilidad, propónle horarios disponibles y pídele amablemente su nombre completo y el servicio.\n"
-            "- Responde siempre en español, de forma natural (máximo 2 a 3 frases breves), como un excelente recepcionista por WhatsApp.\n"
+            "- Si el cliente consulta disponibilidad o pide cita, dale opciones claras de inmediato (ej: 'Tenemos turnos disponibles a las 10:00 AM o a las 3:30 PM, ¿cuál te queda mejor?').\n"
             "- OBLIGATORIO: Cuando el cliente confirme explícitamente fecha, hora, nombre y servicio, confirma la cita y pon SIEMPRE al final de tu mensaje el código: "
             "[[AGENDAR|YYYY-MM-DD|HH:MM|Nombre del cliente|Servicio]]\n"
         )
@@ -384,9 +388,9 @@ async def simulate_conversation_turn(
                         system_prompt=system_prompt,
                         messages=history_msgs,
                         temperature=0.35,
-                        max_tokens=400,
+                        max_tokens=1000,
                     ),
-                    timeout=12.0,
+                    timeout=14.0,
                 )
                 reply_text = (llm_resp.content or "").strip()
                 if reply_text:
