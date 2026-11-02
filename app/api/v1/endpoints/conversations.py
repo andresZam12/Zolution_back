@@ -43,6 +43,8 @@ class SimulateMessageRequest(BaseModel):
     customer_name: Optional[str] = Field(default="Cliente Simulador WhatsApp")
     customer_phone: Optional[str] = Field(default="+57 300 000 0000")
     system_prompt_override: Optional[str] = None
+    llm_provider_override: Optional[str] = None
+    llm_model_override: Optional[str] = None
 
 
 class SimulateMessageResponse(BaseModel):
@@ -327,13 +329,26 @@ async def simulate_conversation_turn(
         appointment_created = False
         lower_msg = payload.message.lower()
 
-        # 7. Candidate LLM providers (configured one first, then fallbacks)
+        # 7. Candidate LLM providers (priority: request override -> saved config -> fallbacks)
         candidates: list[tuple[str, str]] = []
-        if agent_cfg and agent_cfg.llm_provider:
-            pref_model = agent_cfg.llm_model or ""
-            if agent_cfg.llm_provider == "google" and (not pref_model or "2.0" in pref_model or "2.5" in pref_model):
-                pref_model = "gemini-3.8-flash"
-            candidates.append((agent_cfg.llm_provider, pref_model))
+        preferred_provider = (
+            payload.llm_provider_override
+            or (agent_cfg.llm_provider if agent_cfg else None)
+            or "google"
+        ).strip().lower()
+        preferred_model = (
+            payload.llm_model_override
+            or (agent_cfg.llm_model if agent_cfg else None)
+            or ""
+        ).strip()
+
+        if preferred_provider == "google":
+            if not preferred_model or "2.0" in preferred_model or "2.5" in preferred_model:
+                preferred_model = "gemini-3.8-flash"
+            candidates.append(("google", preferred_model))
+            candidates.append(("google", "gemini-flash-latest"))
+        elif preferred_provider:
+            candidates.append((preferred_provider, preferred_model))
 
         for pname, pmodel in (
             ("google", "gemini-3.8-flash"),
@@ -375,10 +390,23 @@ async def simulate_conversation_turn(
                 b_date, b_time, b_name, b_service = (g.strip() for g in m.groups())
                 reply_text = re.sub(r"\[\[AGENDAR[^\]]*\]\]", "", reply_text).strip()
                 try:
-                    hh, mm = (int(x) for x in b_time.split(":")[:2])
+                    # Parse time safely: handle 10:00, 10:00 AM, 15:30, 3:30 PM, etc.
+                    clean_time = b_time.upper().strip()
+                    is_pm = "PM" in clean_time
+                    time_digits = re.findall(r"\d+", clean_time)
+                    hh = int(time_digits[0]) if len(time_digits) > 0 else 10
+                    mm = int(time_digits[1]) if len(time_digits) > 1 else 0
+                    if is_pm and hh < 12:
+                        hh += 12
+                    elif not is_pm and "AM" in clean_time and hh == 12:
+                        hh = 0
+
+                    date_match = re.search(r"\d{4}-\d{2}-\d{2}", b_date)
+                    clean_date = date_match.group(0) if date_match else tomorrow
+
                     end_dt = datetime(2026, 1, 1, hh, mm) + timedelta(minutes=45)
-                    start_iso = f"{b_date}T{hh:02d}:{mm:02d}:00-05:00"
-                    end_iso = f"{b_date}T{end_dt.hour:02d}:{end_dt.minute:02d}:00-05:00"
+                    start_iso = f"{clean_date}T{hh:02d}:{mm:02d}:00-05:00"
+                    end_iso = f"{clean_date}T{end_dt.hour:02d}:{end_dt.minute:02d}:00-05:00"
                     event_id = f"pg_sim_{uuid.uuid4().hex[:7]}"
                     html_link = None
                     try:

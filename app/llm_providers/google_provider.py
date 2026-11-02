@@ -96,16 +96,29 @@ class GoogleProvider(LLMProvider):
         max_tokens: int,
         model_name: str | None = None,
     ) -> genai.GenerativeModel:
-        """Create a GenerativeModel instance with system instruction and config."""
-        return genai.GenerativeModel(
-            model_name=model_name or self._model_name,
-            system_instruction=system_prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-                **self._generation_config_defaults,
-            ),
-        )
+        """Create a GenerativeModel instance with low thinking level for fast conversational response."""
+        try:
+            # Low thinking level ensures fast sub-2-second conversational responses on Gemini 3.8 Flash
+            return genai.GenerativeModel(
+                model_name=model_name or self._model_name,
+                system_instruction=system_prompt,
+                generation_config={
+                    "temperature": temperature,
+                    "max_output_tokens": max_tokens,
+                    "candidate_count": 1,
+                    "thinking": {"thinking_level": "low"},
+                },
+            )
+        except Exception:
+            return genai.GenerativeModel(
+                model_name=model_name or self._model_name,
+                system_instruction=system_prompt,
+                generation_config=genai.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                    **self._generation_config_defaults,
+                ),
+            )
 
     @staticmethod
     def _to_google_messages(messages: list[ConversationMessage]) -> list[dict]:
