@@ -354,6 +354,7 @@ async def simulate_conversation_turn(
             candidates.append(("google", preferred_model))
             if preferred_model != "gemini-flash-latest":
                 candidates.append(("google", "gemini-flash-latest"))
+            candidates.append(("google", "gemini-pro-latest"))
         elif preferred_provider == "anthropic":
             candidates.append(("anthropic", preferred_model or "claude-3-5-haiku-latest"))
             candidates.append(("google", "gemini-3.8-flash"))

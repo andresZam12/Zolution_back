@@ -47,10 +47,14 @@ GEMINI_FLASH_LATEST = "gemini-flash-latest"
 
 def _normalize_model_name(model: str) -> str:
     cleaned = (model or "").strip().lower()
-    if not cleaned or "2.0" in cleaned or "2.5" in cleaned or "3.8" in cleaned or "flash" in cleaned:
+    if not cleaned:
         return GEMINI_3_8_FLASH
+    if "flash-latest" in cleaned or cleaned == GEMINI_FLASH_LATEST:
+        return GEMINI_FLASH_LATEST
     if "pro" in cleaned:
         return "gemini-pro-latest"
+    if "3.8" in cleaned or "2.0" in cleaned or "2.5" in cleaned:
+        return GEMINI_3_8_FLASH
     return cleaned
 
 
@@ -179,13 +183,17 @@ class GoogleProvider(LLMProvider):
                 timeout=12.0,
             )
         except Exception as exc:
-            # If 3.8 flash failed with not found/available, retry with gemini-flash-latest
-            if (
-                isinstance(exc, (DeadlineExceeded, TimeoutError, asyncio.TimeoutError))
+            # If primary model failed (timeout, 429 quota, not found), retry with alternative model
+            is_quota_or_temporary = (
+                isinstance(exc, (DeadlineExceeded, TimeoutError, asyncio.TimeoutError, ResourceExhausted))
+                or "429" in str(exc)
+                or "quota" in str(exc).lower()
+                or "resource_exhausted" in str(exc).lower()
                 or "not found" in str(exc).lower()
                 or "no longer available" in str(exc).lower()
-            ) and self._model_name != GEMINI_FLASH_LATEST:
-                logger.info("Gemini %s failed or timed out; falling back to %s", self._model_name, GEMINI_FLASH_LATEST)
+            )
+            if is_quota_or_temporary and self._model_name != GEMINI_FLASH_LATEST:
+                logger.info("Gemini %s issue (%s); falling back to %s", self._model_name, exc, GEMINI_FLASH_LATEST)
                 try:
                     fallback_model = self._get_model(system_prompt, temperature, max_tokens, GEMINI_FLASH_LATEST)
                     response = await asyncio.wait_for(
