@@ -98,6 +98,9 @@ class Settings(BaseSettings):
             elif url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
                 url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
             return url
+        # If no explicit superadmin URL, fallback to the main cloud DATABASE_URL
+        if self.DIRECT_DATABASE_URL:
+            return self.DATABASE_URL
         user = self.SUPERADMIN_DB_USER or self.DATABASE_USER
         password = self.SUPERADMIN_DB_PASSWORD or self.DATABASE_PASSWORD
         return (

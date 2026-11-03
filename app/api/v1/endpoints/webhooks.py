@@ -181,10 +181,9 @@ async def process_message_background_task(
         f"Starting WhatsApp background worker for {customer_phone} (phone_id={phone_number_id})"
     )
     try:
-        gen = get_superadmin_db_session()
-        db: AsyncSession = await anext(gen)
+        from app.core.database import AsyncSessionFactory
 
-        try:
+        async with AsyncSessionFactory() as db:
             service = ConversationService(db)
             await service.process_incoming_message(
                 phone_number_id=phone_number_id,
@@ -192,10 +191,5 @@ async def process_message_background_task(
                 text_content=text_content,
                 customer_name=customer_name,
             )
-        finally:
-            try:
-                await anext(gen)
-            except StopAsyncIteration:
-                pass
     except Exception as e:
         logger.exception(f"Unhandled error in WhatsApp background message processing: {e}")
