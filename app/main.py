@@ -108,9 +108,17 @@ def _register_exception_handlers(app: FastAPI) -> None:
         logger = logging.getLogger(__name__)
         logger.exception("Unhandled exception on %s %s", request.method, request.url)
 
+        origin = request.headers.get("origin") or "*"
+        headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "An internal error occurred. Please try again later."},
+            headers=headers,
         )
 
 

@@ -353,6 +353,7 @@ async def simulate_conversation_turn(
             "--- CONTEXTO EN TIEMPO REAL (no lo menciones como 'contexto') ---\n"
             f"Negocio: {org_name}\n"
             f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
+            f"Cliente con quien hablas: {customer_name}\n"
             f"Servicios: {services_text}\n"
             f"Horario de atención: {schedule_text}\n"
             f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
@@ -361,9 +362,10 @@ async def simulate_conversation_turn(
             "- Termina siempre tus oraciones e ideas de forma 100% completa y coherente (máximo 2 a 3 frases breves). NUNCA cortes palabras a la mitad.\n"
             "- Si el cliente saluda (ej: 'hola', 'buenas'), salúdalo amablemente, preséntate brevemente y pregúntale en qué le puedes colaborar hoy.\n"
             "- Si el cliente consulta disponibilidad o pide cita o reunión, dale opciones claras de inmediato (ej: 'Tenemos disponibilidad a las 10:00 AM o a las 3:30 PM, ¿cuál te queda mejor?').\n"
-            "- OBLIGATORIO: Cuando el cliente elija o confirme una fecha u hora (ej: 'el miércoles a las 4 pm', 'a las 10 am', 'agenda por favor'), "
+            f"- Ya conoces el nombre del cliente ({customer_name}). Al agendar, NO le vuelvas a pedir su nombre ni su correo, confírmale directamente que la cita o reunión virtual ha quedado agendada.\n"
+            "- OBLIGATORIO: Cuando el cliente elija o confirme una fecha u hora (ej: 'el jueves a las 11 am', 'a las 10 am', 'agenda por favor'), "
             "confirma de inmediato con entusiasmo que su cita o reunión ha quedado reservada y coloca SIEMPRE al final de tu mensaje el comando: "
-            "[[AGENDAR|YYYY-MM-DD|HH:MM|Nombre del cliente|Servicio]]\n"
+            f"[[AGENDAR|YYYY-MM-DD|HH:MM|{customer_name}|Servicio]]\n"
         )
 
         reply_text = ""
@@ -440,6 +442,7 @@ async def simulate_conversation_turn(
                 # Fallback: check if the assistant explicitly confirmed an appointment in natural language
                 clean_reply_lower = reply_text.lower()
                 clean_user = lower_msg.strip()
+                combined_history_lower = " ".join([m.content for m in history_msgs]).lower()
                 is_greeting = clean_user in (
                     "hola", "buenas", "buen dia", "buenos dias", "buenas tardes", "buenas noches", "hey", "hola!", "hola buenas"
                 )
@@ -452,7 +455,8 @@ async def simulate_conversation_turn(
                         w in clean_reply_lower
                         for w in (
                             "quedó agendada", "ha quedado agendada", "registré tu cita", "tu cita ha sido agendada",
-                            "agendé formalmente tu cita", "cita programada con éxito", "he reservado tu cita"
+                            "agendé formalmente tu cita", "cita programada con éxito", "he reservado tu cita",
+                            "queda reservada tu reunión", "quedó reservada tu reunión", "confirmadísimo", "reunión agendada"
                         )
                     )
                 )
