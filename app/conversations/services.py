@@ -172,7 +172,7 @@ class ConversationService:
         self.db.add(user_message)
         await self.db.commit()
 
-        # 4. Prepare message history for LLM in natural chronological order
+        # 4. Prepare message history for LLM in natural chronological order (clean up trailing broken syntax)
         stmt_history = (
             select(Message)
             .where(Message.conversation_id == conversation.id)
@@ -180,13 +180,19 @@ class ConversationService:
         )
         hist_res = await self.db.execute(stmt_history)
         all_msgs = list(hist_res.scalars().all())
-        recent_msgs = all_msgs[-20:]
+        recent_msgs = all_msgs[-12:]
 
-        history_msgs = [
-            ConversationMessage(role=m.role, content=m.content.strip())
-            for m in recent_msgs
-            if m.content and m.content.strip()
-        ]
+        history_msgs = []
+        for m in recent_msgs:
+            c = (m.content or "").strip()
+            if not c:
+                continue
+            if m.role in ("assistant", "model"):
+                c = re.sub(r"\[\[.*?\]\]", "", c).strip()
+                c = re.sub(r"[\s,;:-]+$", "", c).strip()
+                if not c.endswith((".", "!", "?")):
+                    c += "."
+            history_msgs.append(ConversationMessage(role=m.role, content=c))
 
         # 5. Build system prompt
         ans = dict((agent_config.onboarding_answers or {}) or {})
@@ -225,20 +231,16 @@ class ConversationService:
             f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
             f"Cliente con quien hablas: {effective_customer_name}\n"
             f"Teléfono del cliente: {customer_phone}\n"
-            f"Servicios: {services_text}\n"
             f"Horario de atención: {schedule_text}\n"
             f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
-            "REGLAS OBLIGATORIAS DE RESPUESTA:\n"
-            "- Hablas directamente con un cliente por WhatsApp. Sé siempre muy amable, cálido, conversacional y servicial.\n"
-            "- Mantén siempre coherencia y memoria con los mensajes anteriores de la conversación.\n"
-            f"- Ya conoces el nombre del cliente ({effective_customer_name}).\n"
-            "- CUANDO EL CLIENTE PIDA O CONFIRME UNA CITA (fecha/hora):\n"
-            f"  1. Redacta tu mensaje completo al cliente confirmando la fecha y la hora explícitamente en el texto (ej: '¡Con mucho gusto, {effective_customer_name}! Tu cita ha quedado agendada con éxito para mañana a las 10:30 AM. ¡Te esperamos!').\n"
-            "  2. NUNCA cortes la frase ni la dejes en coma o palabras a medias.\n"
-            f"  3. En un renglón aparte al final agrega el tag: [[AGENDAR|{tomorrow}|HH:MM]]\n"
-            "- IMPORTANTE: Si la cita ya quedó agendada en un mensaje anterior y el cliente solo agradece, se despide o hace otra pregunta, responde con amabilidad SIN volver a emitir el tag [[AGENDAR]].\n"
-            "- SI EL CLIENTE PIDE CANCELAR: Confirma con amabilidad y al final pon: [[CANCELAR]]\n"
-            "- SI EL CLIENTE PIDE REAGENDAR O CAMBIAR HORA: Confirma el nuevo horario completo y al final pon: [[REAGENDAR|YYYY-MM-DD|HH:MM]]\n"
+            "REGLAS ESTRICTAS DE RESPUESTA EN WHATSAPP:\n"
+            "1. BREVEDAD: Responde siempre en máximo 1 o 2 oraciones breves, cálidas y directas. NUNCA envíes párrafos largos ni repitas descripciones corporativas o listas de servicios completas.\n"
+            "2. ORACIONES COMPLETAS: Cada oración debe tener sentido gramatical completo y terminar con su punto final (ej: '¡Listo, Andrés! Tu cita ha quedado agendada para mañana a las 10:30 AM. ¡Te esperamos!'). NUNCA dejes frases cortadas ni incompletas.\n"
+            "3. COMANDOS DE ACCIÓN (siempre en una línea nueva al final del mensaje):\n"
+            f"   - Agendar cita: Confirma la hora completa en el texto y al final pon en renglón aparte: [[AGENDAR|{tomorrow}|HH:MM]]\n"
+            "   - Cancelar: Confirma la cancelación en el texto y al final pon en renglón aparte: [[CANCELAR]]\n"
+            "   - Reagendar: Confirma el nuevo horario en el texto y al final pon en renglón aparte: [[REAGENDAR|YYYY-MM-DD|HH:MM]]\n"
+            "   - Agradecimiento o despedida: Responde con amabilidad en 1 frase (ej: '¡Con mucho gusto! Feliz día.') SIN incluir ningún comando ni tag.\n"
         )
 
         # 6. Call LLM with resilient candidates
@@ -256,7 +258,7 @@ class ConversationService:
                         system_prompt=system_prompt,
                         messages=history_msgs,
                         temperature=0.3,
-                        max_tokens=1000,
+                        max_tokens=250,
                     ),
                     timeout=12.0,
                 )
@@ -386,7 +388,8 @@ class ConversationService:
 
         # Fix truncated sentences ending in incomplete prepositions or punctuation
         reply_text = re.sub(r"[\s,;:-]+$", "", reply_text).strip()
-        if re.search(r"\b(para mañana|mañana|a las|a|el día)$", reply_text, re.IGNORECASE):
+        incomplete_pattern = r"\b(para mañana|mañana|a las|a|el día|para|las|el|en|confirmada para|quedó agendada para|quedó para)$"
+        if re.search(incomplete_pattern, reply_text, re.IGNORECASE):
             hh_12 = ((hh - 1) % 12) + 1
             ampm = "PM" if hh >= 12 else "AM"
             if re.search(r"\b(a las|a)$", reply_text, re.IGNORECASE):
