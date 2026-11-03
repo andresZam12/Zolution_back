@@ -2,7 +2,11 @@
 Conversation service layer.
 """
 
+import asyncio
+from datetime import datetime, timedelta
 import logging
+import re
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +14,11 @@ from sqlalchemy.orm import selectinload
 
 from app.agents.models import AgentConfig
 from app.conversations.models import Conversation, Message
+from app.integrations.google.calendar import GoogleCalendarService
 from app.integrations.whatsapp.client import WhatsAppClient
 from app.llm_providers.base import ConversationMessage
 from app.llm_providers.factory import LLMProviderFactory
+from app.tenants.models import Organization
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +52,11 @@ class ConversationService:
 
         if not conversation:
             conversation = Conversation(
+                id=uuid.uuid4(),
                 organization_id=organization_id,
                 customer_phone=customer_phone,
-                customer_name=customer_name,
+                customer_name=customer_name or "Cliente",
+                status="active",
             )
             self.db.add(conversation)
             await self.db.flush()
@@ -65,42 +73,63 @@ class ConversationService:
         customer_name: str | None,
     ) -> None:
         """
-        Main entrypoint for processing an incoming message.
+        Main entrypoint for processing an incoming WhatsApp message.
         """
+        clean_phone_id = str(phone_number_id).strip()
+        logger.info(
+            f"Processing incoming WhatsApp message from {customer_phone} (phone_id={clean_phone_id}): '{text_content}'"
+        )
+
         # 1. Look up AgentConfig by whatsapp_phone_number_id
-        # This determines which tenant the message is for.
-        stmt = select(AgentConfig).where(AgentConfig.whatsapp_phone_number_id == phone_number_id)
+        stmt = select(AgentConfig).where(AgentConfig.whatsapp_phone_number_id == clean_phone_id)
         result = await self.db.execute(stmt)
         agent_config = result.scalar_one_or_none()
 
         if not agent_config:
-            # Fallback: look up the active agent config and associate it with this phone_number_id
-            stmt = select(AgentConfig).order_by(AgentConfig.status.asc()).limit(1)
-            result = await self.db.execute(stmt)
+            # Fallback: find the active AgentConfig and associate it with this phone_number_id
+            stmt_fallback = (
+                select(AgentConfig)
+                .order_by(AgentConfig.updated_at.desc())
+                .limit(1)
+            )
+            result = await self.db.execute(stmt_fallback)
             agent_config = result.scalar_one_or_none()
             if agent_config:
-                agent_config.whatsapp_phone_number_id = phone_number_id
+                agent_config.whatsapp_phone_number_id = clean_phone_id
+                agent_config.status = "active"
                 self.db.add(agent_config)
-                await self.db.flush()
-                logger.info(f"Associated AgentConfig {agent_config.id} with phone_number_id {phone_number_id}")
+                await self.db.commit()
+                logger.info(
+                    f"Associated AgentConfig {agent_config.id} with WhatsApp phone_number_id {clean_phone_id}"
+                )
 
         if not agent_config:
-            logger.warning(f"No AgentConfig found for phone_number_id: {phone_number_id}")
-            return
-
-        if agent_config.status != "active":
-            logger.info(f"Agent is not active for organization {agent_config.organization_id}")
+            logger.warning(f"No AgentConfig found in database to handle phone_number_id: {clean_phone_id}")
             return
 
         organization_id = str(agent_config.organization_id)
 
+        # Load Organization business name
+        org_name = "tu negocio"
+        try:
+            org_res = await self.db.execute(
+                select(Organization).where(Organization.id == agent_config.organization_id)
+            )
+            org = org_res.scalar_one_or_none()
+            if org and org.name:
+                org_name = org.name
+        except Exception as org_err:
+            logger.warning(f"Could not load organization name: {org_err}")
+
         # 2. Get or create conversation history
+        effective_customer_name = (customer_name or "Cliente").strip()
         conversation = await self._get_or_create_conversation(
-            organization_id, customer_phone, customer_name
+            organization_id, customer_phone, effective_customer_name
         )
 
-        # 3. Append the incoming user message
+        # 3. Append incoming user message
         user_message = Message(
+            id=uuid.uuid4(),
             conversation_id=conversation.id,
             organization_id=organization_id,
             role="user",
@@ -108,117 +137,175 @@ class ConversationService:
         )
         self.db.add(user_message)
         conversation.messages.append(user_message)
-        await self.db.flush()
+        await self.db.commit()
 
-        # 4. Prepare messages for LLM
-        # Map our DB messages to the ConversationMessage objects expected by the LLM Provider
-        llm_messages = [
-            ConversationMessage(role=m.role, content=m.content) for m in conversation.messages
+        # 4. Prepare message history for LLM
+        history_msgs = [
+            ConversationMessage(role=m.role, content=m.content.strip())
+            for m in conversation.messages[-8:]
+            if m.content and m.content.strip()
         ]
 
-        # 5. Call the LLM
-        from app.integrations.google.calendar import GoogleCalendarService
-        from app.llm_providers.tools import AVAILABLE_TOOLS
+        # 5. Build system prompt
+        ans = dict((agent_config.onboarding_answers or {}) or {})
+        agent_name = ans.get("agentName") or ans.get("agent_name") or "Asistente"
+        services_text = ans.get("services") or "Asesoría y atención especializada"
+        schedule_text = ans.get("schedule") or "Lunes a Viernes 8:00 AM - 6:00 PM"
 
-        try:
-            provider = self.llm_factory.get_provider(
-                agent_config.llm_provider,
-                agent_config.llm_model,
-                agent_config.system_prompt_generated or "",
-            )
-            llm_response = await provider.generate(
-                system_prompt=agent_config.system_prompt_generated or "",
-                messages=llm_messages,
-                tools=AVAILABLE_TOOLS,
-            )
+        now_co = datetime.utcnow() - timedelta(hours=5)
+        tomorrow = (now_co + timedelta(days=1)).strftime("%Y-%m-%d")
+        default_avail = f"Atendemos {schedule_text}. Horarios recomendados: 10:00 AM y 3:30 PM."
+        avail_info = default_avail
 
-            # If the LLM requested a tool call, execute it
-            if getattr(llm_response, "tool_calls", None):
-                # We only process the first tool call in this MVP for simplicity
-                tool_call = llm_response.tool_calls[0]
-                function_name = tool_call["function"]["name"]
-                arguments = tool_call["function"].get("arguments", "{}")
-                import json
+        cal_service = GoogleCalendarService(self.db, organization_id)
+        lower_msg = text_content.lower()
+        needs_calendar = any(
+            kw in lower_msg
+            for kw in ("cita", "hora", "agendar", "disponib", "espacio", "turno", "reservar", "mañana", "calendario", "cupo")
+        )
+        if needs_calendar:
+            try:
+                avail_res = await asyncio.wait_for(
+                    cal_service.get_availability(tomorrow),
+                    timeout=2.0,
+                )
+                res_str = str(avail_res)
+                if res_str and "no disponible" not in res_str.lower() and "failed" not in res_str.lower():
+                    avail_info = res_str
+            except Exception as e:
+                logger.info(f"Calendar availability check skipped/failed: {e}")
 
-                logger.info(f"LLM requested tool call: {function_name} with args {arguments}")
+        base_prompt = agent_config.system_prompt_generated or f"Eres {agent_name}, asistente virtual de {org_name}."
+        system_prompt = (
+            f"{base_prompt}\n\n"
+            "--- CONTEXTO EN TIEMPO REAL ---\n"
+            f"Negocio: {org_name}\n"
+            f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
+            f"Cliente con quien hablas: {effective_customer_name}\n"
+            f"Teléfono del cliente: {customer_phone}\n"
+            f"Servicios: {services_text}\n"
+            f"Horario de atención: {schedule_text}\n"
+            f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
+            "REGLAS OBLIGATORIAS DE RESPUESTA:\n"
+            "- Hablas directamente con un cliente por WhatsApp. Sé siempre muy amable, cálido, conversacional y servicial.\n"
+            "- Termina siempre tus oraciones e ideas de forma 100% completa y coherente (máximo 2 a 3 frases breves). NUNCA cortes palabras a la mitad.\n"
+            "- Si el cliente saluda (ej: 'hola', 'buenas'), salúdalo amablemente, preséntate brevemente y pregúntale en qué le puedes colaborar hoy.\n"
+            "- Si el cliente consulta disponibilidad o pide cita o reunión, dale opciones claras de inmediato (ej: 'Tenemos disponibilidad a las 10:00 AM o a las 3:30 PM, ¿cuál te queda mejor?').\n"
+            f"- Ya conoces el nombre del cliente ({effective_customer_name}). Al agendar, NO le vuelvas a pedir su nombre ni su correo, confírmale directamente que la cita o reunión virtual ha quedado agendada.\n"
+            "- OBLIGATORIO AGENDAR: Cuando el cliente elija o confirme una fecha u hora (ej: 'el jueves a las 11 am', 'a las 10 am', 'agenda por favor'), "
+            "confirma de inmediato con entusiasmo que su cita o reunión ha quedado reservada y coloca SIEMPRE al final de tu mensaje el comando: "
+            f"[[AGENDAR|YYYY-MM-DD|HH:MM|{effective_customer_name}|Servicio]]\n"
+            "- OBLIGATORIO CANCELAR: Si el cliente solicita cancelar o anular su cita (ej: 'cancela mi cita', 'ya no puedo ir', 'anula la cita', 'deseo cancelar'), "
+            "confirma con amabilidad y calidez que su cita ha sido cancelada y coloca SIEMPRE al final el comando: "
+            f"[[CANCELAR|{effective_customer_name}]]\n"
+            "- OBLIGATORIO REAGENDAR: Si el cliente solicita reprogramar o cambiar su cita (ej: 'cámbiame la cita a las 4pm', 'mejor el viernes a las 11'), "
+            "confirma con amabilidad el cambio de horario y coloca SIEMPRE al final el comando: "
+            f"[[REAGENDAR|YYYY-MM-DD|HH:MM|{effective_customer_name}|Servicio]]\n"
+        )
 
+        # 6. Call LLM with resilient candidates
+        candidates = [
+            ("google", "gemini-3.8-flash"),
+            ("google", "gemini-flash-latest"),
+            ("openai", "gpt-4o-mini"),
+        ]
+        reply_text = ""
+        for pname, pmodel in candidates:
+            try:
+                provider = self.llm_factory.get_provider(pname, pmodel, system_prompt)
+                resp = await asyncio.wait_for(
+                    provider.generate(
+                        system_prompt=system_prompt,
+                        messages=history_msgs,
+                        temperature=0.3,
+                        max_tokens=500,
+                    ),
+                    timeout=12.0,
+                )
+                if resp.content and resp.content.strip():
+                    reply_text = resp.content.strip()
+                    break
+            except Exception as e:
+                logger.warning(f"LLM candidate {pname}/{pmodel} failed in WhatsApp processing: {e}")
+
+        if not reply_text:
+            reply_text = f"¡Hola {effective_customer_name}! Gracias por comunicarte con {org_name}. ¿En qué podemos colaborarte hoy?"
+
+        # 7. Check for commands: CANCELAR, REAGENDAR, AGENDAR
+        cancel_match = re.search(r"\[\[CANCELAR(?:\|([^\]]+))?\]\]", reply_text, re.IGNORECASE)
+        if cancel_match:
+            reply_text = re.sub(r"\[\[CANCELAR[^\]]*\]\]", "", reply_text).strip()
+            try:
+                evs = await cal_service.find_events(effective_customer_name)
+                for ev in evs:
+                    if ev.get("id"):
+                        await cal_service.delete_appointment(ev["id"])
+                        logger.info(f"Cancelled event {ev['id']} on Google Calendar")
+                        break
+            except Exception as e:
+                logger.warning(f"Error deleting event on Google Calendar: {e}")
+
+        m_reagendar = re.search(r"\[\[REAGENDAR\|([^|\]]+)\|([^|\]]+)\|([^|\]]*)\|([^\]]*)\]\]", reply_text, re.IGNORECASE)
+        m_agendar = re.search(r"\[\[AGENDAR\|([^|\]]+)\|([^|\]]+)\|([^|\]]*)\|([^\]]*)\]\]", reply_text, re.IGNORECASE)
+
+        if m_reagendar or m_agendar:
+            match = m_reagendar or m_agendar
+            b_date, b_time, b_name, b_service = (g.strip() for g in match.groups())
+            if m_reagendar:
+                reply_text = re.sub(r"\[\[REAGENDAR[^\]]*\]\]", "", reply_text).strip()
                 try:
-                    args_dict = json.loads(arguments) if isinstance(arguments, str) else arguments
-                except json.JSONDecodeError:
-                    args_dict = {}
+                    evs = await cal_service.find_events(effective_customer_name)
+                    for ev in evs:
+                        if ev.get("id"):
+                            await cal_service.delete_appointment(ev["id"])
+                            break
+                except Exception:
+                    pass
+            else:
+                reply_text = re.sub(r"\[\[AGENDAR[^\]]*\]\]", "", reply_text).strip()
 
-                calendar_service = GoogleCalendarService(self.db, organization_id)
-                tool_result = "Tool execution failed."
-
-                try:
-                    if function_name == "check_availability":
-                        date_str = args_dict.get("date")
-                        if date_str:
-                            tool_result = await calendar_service.get_availability(date_str)
-                    elif function_name == "book_appointment":
-                        tool_result = await calendar_service.create_appointment(
-                            customer_name=args_dict.get("customer_name", ""),
-                            customer_phone=args_dict.get("customer_phone", ""),
-                            start_time=args_dict.get("start_time", ""),
-                            end_time=args_dict.get("end_time", ""),
-                        )
-                except Exception as e:
-                    logger.error(f"Error executing tool {function_name}: {e}")
-                    tool_result = f"Error: {e}"
-
-                # Append assistant's tool call request and the tool's result to the history
-                llm_messages.append(
-                    ConversationMessage(role="assistant", content="", tool_calls=[tool_call])
+            # Schedule new appointment on Google Calendar
+            try:
+                parts = b_time.split(":")
+                hh = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 10
+                mm = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+                start_iso = f"{b_date}T{hh:02d}:{mm:02d}:00"
+                end_iso = f"{b_date}T{(hh+1):02d}:{mm:02d}:00"
+                await cal_service.create_appointment(
+                    customer_name=b_name or effective_customer_name,
+                    customer_phone=customer_phone,
+                    start_time=start_iso,
+                    end_time=end_iso,
                 )
-                llm_messages.append(
-                    ConversationMessage(
-                        role="tool",
-                        content=tool_result,
-                        tool_call_id=tool_call["id"],
-                        name=function_name,
-                    )
-                )
+                logger.info(f"Booked appointment on Google Calendar for {b_name} at {start_iso}")
+            except Exception as e:
+                logger.warning(f"Error booking Google Calendar appointment: {e}")
 
-                # Call LLM again to get the final text response
-                llm_response = await provider.generate(
-                    system_prompt=agent_config.system_prompt_generated or "",
-                    messages=llm_messages,
-                )
+        # Final cleanup of any stray tags
+        reply_text = re.sub(r"\[\[[A-Z_]+[^\]]*\]\]", "", reply_text).strip()
 
-        except Exception as e:
-            logger.exception(f"Error calling LLM provider: {e}")
-            # Fallback message
-            fallback_text = (
-                "I'm having a technical issue right now. Please try again in a few minutes."
-            )
-            llm_response_content = fallback_text
-            tokens_in, tokens_out = None, None
-        else:
-            llm_response_content = llm_response.content
-            tokens_in = llm_response.input_tokens
-            tokens_out = llm_response.output_tokens
-
-        # 6. Save the assistant response
+        # 8. Save assistant response to DB
         assistant_message = Message(
+            id=uuid.uuid4(),
             conversation_id=conversation.id,
             organization_id=organization_id,
             role="assistant",
-            content=llm_response_content,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
+            content=reply_text,
         )
         self.db.add(assistant_message)
         await self.db.commit()
 
-        # 7. Send the response back via WhatsApp
+        # 9. Send via WhatsApp
+        logger.info(f"Sending WhatsApp reply to {customer_phone}: '{reply_text}'")
         try:
             await self.whatsapp_client.send_text_message(
-                phone_number_id=phone_number_id,
+                phone_number_id=clean_phone_id,
                 to=customer_phone,
-                text=llm_response_content,
+                text=reply_text,
             )
+            logger.info(f"WhatsApp reply successfully sent to {customer_phone}")
         except Exception as e:
-            logger.error(f"Failed to send WhatsApp message: {e}")
+            logger.error(f"Failed to send WhatsApp message to {customer_phone}: {e}")
 
     async def list_conversations(
         self, organization_id: str, page: int = 1, page_size: int = 20

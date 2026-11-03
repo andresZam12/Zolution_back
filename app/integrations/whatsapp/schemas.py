@@ -20,19 +20,20 @@ class WhatsAppMessage(BaseModel):
 
 
 class WhatsAppContactProfile(BaseModel):
-    name: str
+    name: str = "Cliente WhatsApp"
 
 
 class WhatsAppContact(BaseModel):
-    profile: WhatsAppContactProfile
-    wa_id: str
+    profile: WhatsAppContactProfile = Field(default_factory=WhatsAppContactProfile)
+    wa_id: str = ""
 
 
 class WhatsAppValue(BaseModel):
-    messaging_product: str
-    metadata: dict[str, Any]
+    messaging_product: str = "whatsapp"
+    metadata: dict[str, Any] = Field(default_factory=dict)
     contacts: list[WhatsAppContact] | None = None
     messages: list[WhatsAppMessage] | None = None
+    statuses: list[dict[str, Any]] | None = None
 
 
 class WhatsAppChange(BaseModel):
