@@ -80,44 +80,35 @@ class ConversationService:
             f"Processing incoming WhatsApp message from {customer_phone} (phone_id={clean_phone_id}): '{text_content}'"
         )
 
-        # 1. Look up AgentConfig by whatsapp_phone_number_id
-        try:
-            await self.db.execute(text("SET LOCAL row_security = off"))
-        except Exception:
-            pass
+        # 1. Look up AgentConfig by setting tenant context on each organization
+        # (Organizations has NO RLS, so it safely discovers the tenant without RLS violation)
+        agent_config = None
+        orgs_res = await self.db.execute(select(Organization).order_by(Organization.created_at.desc()))
+        orgs = list(orgs_res.scalars().all())
 
-        stmt = select(AgentConfig).where(AgentConfig.whatsapp_phone_number_id == clean_phone_id)
-        result = await self.db.execute(stmt)
-        agent_config = result.scalar_one_or_none()
+        for org in orgs:
+            await self.db.execute(
+                text("SELECT set_config('app.current_organization_id', :org_id, false)"),
+                {"org_id": str(org.id)},
+            )
+            stmt_cfg = select(AgentConfig).where(AgentConfig.organization_id == org.id)
+            cfg_res = await self.db.execute(stmt_cfg)
+            cfg = cfg_res.scalar_one_or_none()
+            if cfg:
+                if cfg.whatsapp_phone_number_id == clean_phone_id:
+                    agent_config = cfg
+                    break
+                elif not agent_config:
+                    agent_config = cfg
 
-        if not agent_config:
-            # RLS might be active on agent_configs without app.current_organization_id.
-            # The 'organizations' table has NO RLS, so we scan organizations to find the agent:
-            orgs_res = await self.db.execute(select(Organization).order_by(Organization.created_at.desc()))
-            orgs = list(orgs_res.scalars().all())
-            for org in orgs:
-                await self.db.execute(
-                    text("SELECT set_config('app.current_organization_id', :org_id, false)"),
-                    {"org_id": str(org.id)},
-                )
-                stmt_cfg = select(AgentConfig).where(AgentConfig.organization_id == org.id)
-                cfg_res = await self.db.execute(stmt_cfg)
-                cfg = cfg_res.scalar_one_or_none()
-                if cfg:
-                    if cfg.whatsapp_phone_number_id == clean_phone_id:
-                        agent_config = cfg
-                        break
-                    elif not agent_config:
-                        agent_config = cfg
-
-            if agent_config:
-                agent_config.whatsapp_phone_number_id = clean_phone_id
-                agent_config.status = "active"
-                self.db.add(agent_config)
-                await self.db.commit()
-                logger.info(
-                    f"Associated AgentConfig {agent_config.id} with WhatsApp phone_number_id {clean_phone_id}"
-                )
+        if agent_config:
+            agent_config.whatsapp_phone_number_id = clean_phone_id
+            agent_config.status = "active"
+            self.db.add(agent_config)
+            await self.db.commit()
+            logger.info(
+                f"Associated AgentConfig {agent_config.id} with WhatsApp phone_number_id {clean_phone_id}"
+            )
 
         if not agent_config:
             logger.warning(f"No AgentConfig found in database to handle phone_number_id: {clean_phone_id}")
