@@ -14,6 +14,7 @@ Endpoint summary:
 """
 
 import logging
+import uuid
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
