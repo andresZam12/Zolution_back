@@ -166,7 +166,7 @@ class GoogleProvider(LLMProvider):
         messages: list[ConversationMessage],
         *,
         temperature: float = 0.3,
-        max_tokens: int = 2048,
+        max_tokens: int = 500,
         tools: list[dict] | None = None,
     ) -> LLMResponse:
         """Generate a response using Gemini."""
@@ -262,7 +262,7 @@ class GoogleProvider(LLMProvider):
         messages: list[ConversationMessage],
         *,
         temperature: float = 0.3,
-        max_tokens: int = 2048,
+        max_tokens: int = 500,
         tools: list[dict] | None = None,
     ) -> AsyncIterator[str]:
         """Stream Gemini's response chunk by chunk."""

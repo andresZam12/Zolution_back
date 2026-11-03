@@ -230,6 +230,11 @@ class AgentConfigService:
                 db.add(org)
 
         db.add(config)
+        await db.flush()
+        if not getattr(config, "created_at", None):
+            config.created_at = datetime.utcnow()
+        if not getattr(config, "updated_at", None):
+            config.updated_at = datetime.utcnow()
         logger.info("AgentConfig updated for org %s", organization_id)
         return config
 

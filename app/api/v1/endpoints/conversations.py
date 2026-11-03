@@ -43,6 +43,8 @@ class SimulateMessageRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000)
     customer_name: Optional[str] = Field(default="Cliente Simulador WhatsApp")
     customer_phone: Optional[str] = Field(default="+57 300 000 0000")
+    session_id: Optional[str] = None
+    reset_session: Optional[bool] = False
     system_prompt_override: Optional[str] = None
     llm_provider_override: Optional[str] = None
     llm_model_override: Optional[str] = None
@@ -232,35 +234,55 @@ async def simulate_conversation_turn(
         services_text = ans.get("services") or "Asesoría y atención especializada"
         schedule_text = ans.get("schedule") or "Lunes a Viernes 8:00 AM - 6:00 PM"
 
-        customer_phone = (payload.customer_phone or "+57 300 000 0000").strip()
+        session_id = (payload.session_id or "").strip()
+        effective_phone = f"+57-sim-{session_id}" if session_id else (payload.customer_phone or "+57 300 000 0000").strip()
+        customer_phone = effective_phone
         customer_name = (payload.customer_name or "Cliente Simulador WhatsApp").strip()
+
+        # If reset is requested, archive old active conversation so this session starts completely clean
+        if payload.reset_session:
+            try:
+                from sqlalchemy import update as sql_update
+                await db.execute(
+                    sql_update(Conversation)
+                    .where(
+                        Conversation.organization_id == org_uuid,
+                        Conversation.customer_phone == effective_phone,
+                    )
+                    .values(status="archived")
+                )
+                await db.flush()
+            except Exception:
+                pass
 
         # 3. Find or create active conversation
         conversation = None
-        try:
-            conv_stmt = (
-                select(Conversation)
-                .where(
-                    Conversation.organization_id == org_uuid,
-                    Conversation.customer_phone == customer_phone,
-                    Conversation.status == "active",
+        if not payload.reset_session:
+            try:
+                conv_stmt = (
+                    select(Conversation)
+                    .where(
+                        Conversation.organization_id == org_uuid,
+                        Conversation.customer_phone == customer_phone,
+                        Conversation.status == "active",
+                    )
+                    .order_by(Conversation.updated_at.desc())
                 )
-                .order_by(Conversation.updated_at.desc())
+                conv_res = await db.execute(conv_stmt)
+                conversation = conv_res.scalars().first()
+            except Exception as conv_exc:
+                logger.warning("Could not ensure Conversation in DB: %s", conv_exc)
+
+        if not conversation:
+            conversation = Conversation(
+                id=uuid.uuid4(),
+                organization_id=org_uuid,
+                customer_phone=customer_phone,
+                customer_name=customer_name,
+                status="active",
             )
-            conv_res = await db.execute(conv_stmt)
-            conversation = conv_res.scalars().first()
-            if not conversation:
-                conversation = Conversation(
-                    id=uuid.uuid4(),
-                    organization_id=org_uuid,
-                    customer_phone=customer_phone,
-                    customer_name=customer_name,
-                    status="active",
-                )
-                db.add(conversation)
-                await db.flush()
-        except Exception as conv_exc:
-            logger.warning("Could not ensure Conversation in DB: %s", conv_exc)
+            db.add(conversation)
+            await db.flush()
 
         active_conv_id = conversation.id if conversation else uuid.uuid4()
 
@@ -391,9 +413,9 @@ async def simulate_conversation_turn(
                         system_prompt=system_prompt,
                         messages=history_msgs,
                         temperature=0.3,
-                        max_tokens=2048,
+                        max_tokens=600,
                     ),
-                    timeout=14.0,
+                    timeout=10.0,
                 )
                 reply_text = (llm_resp.content or "").strip()
                 if reply_text:
@@ -415,19 +437,24 @@ async def simulate_conversation_turn(
                 b_date, b_time, b_name, b_service = (g.strip() for g in m.groups())
                 reply_text = re.sub(r"\[\[AGENDAR[^\]]*\]\]", "", reply_text).strip()
             else:
-                # Fallback: check if the assistant or user confirmed an appointment in natural language
+                # Fallback: check if the assistant explicitly confirmed an appointment in natural language
                 clean_reply_lower = reply_text.lower()
-                combined_history_lower = " ".join([m.content for m in history_msgs]).lower() + f" {lower_msg} {clean_reply_lower}"
-                is_natural_confirm = any(
-                    w in clean_reply_lower or w in lower_msg
-                    for w in (
-                        "agendada", "confirmada", "te espero", "registrada tu cita", "quedó agendada",
-                        "cita programada", "te esperamos", "ya me agendaste", "agendaste", "agendado",
-                        "agendar", "agenda", "perfecto para el", "excelente elección"
+                clean_user = lower_msg.strip()
+                is_greeting = clean_user in (
+                    "hola", "buenas", "buen dia", "buenos dias", "buenas tardes", "buenas noches", "hey", "hola!", "hola buenas"
+                )
+                # Never trigger auto-confirm on a greeting or if assistant is asking for details
+                is_asking_question = "?" in reply_text or "¿" in reply_text or "indicar" in clean_reply_lower or "podrías" in clean_reply_lower or "falta" in clean_reply_lower
+                is_natural_confirm = (
+                    not is_greeting
+                    and not is_asking_question
+                    and any(
+                        w in clean_reply_lower
+                        for w in (
+                            "quedó agendada", "ha quedado agendada", "registré tu cita", "tu cita ha sido agendada",
+                            "agendé formalmente tu cita", "cita programada con éxito", "he reservado tu cita"
+                        )
                     )
-                ) and any(
-                    t in combined_history_lower
-                    for t in ("10", "11", "12", "1", "2", "3", "4", "5", "8", "9", "am", "pm", ":00", ":30", "mierco", "martes", "jueve", "vierne", "lunes", "sabado")
                 )
                 if is_natural_confirm:
                     time_digits = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", f"{lower_msg} {clean_reply_lower} {combined_history_lower}", re.IGNORECASE)

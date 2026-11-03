@@ -184,8 +184,8 @@ class AgentConfigResponse(BaseModel):
     llm_model: str
     onboarding_answers: dict | None
     system_prompt_generated: str | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class AgentStatusResponse(BaseModel):
