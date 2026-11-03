@@ -220,8 +220,8 @@ class ConversationService:
 
         # 6. Call LLM with resilient candidates
         candidates = [
-            ("google", "gemini-1.5-flash"),
             ("google", "gemini-flash-latest"),
+            ("google", "gemini-1.5-flash"),
             ("openai", "gpt-4o-mini"),
         ]
         reply_text = ""
@@ -241,7 +241,7 @@ class ConversationService:
                     reply_text = resp.content.strip()
                     break
             except Exception as e:
-                logger.warning(f"LLM candidate {pname}/{pmodel} failed in WhatsApp processing: {e}")
+                logger.warning(f"LLM candidate {pname}/{pmodel} failed in WhatsApp processing: {e}", exc_info=True)
 
         if not reply_text:
             reply_text = f"¡Hola {effective_customer_name}! Gracias por comunicarte con {org_name}. ¿En qué podemos colaborarte hoy?"

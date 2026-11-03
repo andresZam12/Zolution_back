@@ -41,19 +41,19 @@ from app.llm_providers.exceptions import (
 
 logger = logging.getLogger(__name__)
 
+GEMINI_FLASH_LATEST = "gemini-flash-latest"
 GEMINI_1_5_FLASH = "gemini-1.5-flash"
-GEMINI_FLASH_LATEST = "gemini-1.5-flash"
 
 
 def _normalize_model_name(model: str) -> str:
     cleaned = (model or "").strip().lower()
     if not cleaned:
-        return GEMINI_1_5_FLASH
+        return GEMINI_FLASH_LATEST
     if "flash" in cleaned:
-        return GEMINI_1_5_FLASH
+        return GEMINI_FLASH_LATEST
     if "pro" in cleaned:
-        return "gemini-1.5-pro"
-    return GEMINI_1_5_FLASH
+        return "gemini-pro-latest"
+    return cleaned
 
 
 class GoogleProvider(LLMProvider):
@@ -62,16 +62,16 @@ class GoogleProvider(LLMProvider):
 
     Args:
         api_key: Google AI Studio API key. Falls back to `GOOGLE_API_KEY` env var.
-        model:   Model identifier. Defaults to gemini-3.8-flash.
+        model:   Model identifier. Defaults to gemini-flash-latest.
     """
 
     PROVIDER_NAME = "google"
-    DEFAULT_MODEL = GEMINI_1_5_FLASH
+    DEFAULT_MODEL = GEMINI_FLASH_LATEST
 
     def __init__(
         self,
         api_key: str = "",
-        model: str = GEMINI_1_5_FLASH,
+        model: str = GEMINI_FLASH_LATEST,
     ) -> None:
         if not api_key:
             import os
@@ -181,27 +181,17 @@ class GoogleProvider(LLMProvider):
                 timeout=12.0,
             )
         except Exception as exc:
-            # If primary model failed (timeout, 429 quota, not found), retry with alternative model
-            is_quota_or_temporary = (
-                isinstance(exc, (DeadlineExceeded, TimeoutError, asyncio.TimeoutError, ResourceExhausted))
-                or "429" in str(exc)
-                or "quota" in str(exc).lower()
-                or "resource_exhausted" in str(exc).lower()
-                or "not found" in str(exc).lower()
-                or "no longer available" in str(exc).lower()
-            )
-            if is_quota_or_temporary and self._model_name != GEMINI_FLASH_LATEST:
-                logger.info("Gemini %s issue (%s); falling back to %s", self._model_name, exc, GEMINI_FLASH_LATEST)
-                try:
-                    fallback_model = self._get_model(system_prompt, temperature, max_tokens, GEMINI_FLASH_LATEST)
-                    response = await asyncio.wait_for(
-                        fallback_model.generate_content_async(google_msgs),
-                        timeout=12.0,
-                    )
-                    self._model_name = GEMINI_FLASH_LATEST
-                except Exception as fb_exc:
-                    raise self._map_exception(fb_exc, self.PROVIDER_NAME) from fb_exc
-            else:
+            # If primary model failed, retry with alternative model
+            alt_model = GEMINI_1_5_FLASH if "latest" in self._model_name else GEMINI_FLASH_LATEST
+            logger.info("Gemini %s issue (%s); falling back to %s", self._model_name, exc, alt_model)
+            try:
+                fallback_model = self._get_model(system_prompt, temperature, max_tokens, alt_model)
+                response = await asyncio.wait_for(
+                    fallback_model.generate_content_async(google_msgs),
+                    timeout=12.0,
+                )
+            except Exception as fb_exc:
+                logger.warning("Gemini fallback %s also failed (%s)", alt_model, fb_exc)
                 raise self._map_exception(exc, self.PROVIDER_NAME) from exc
 
         # Handle content extraction safely
