@@ -182,8 +182,13 @@ async def process_message_background_task(
     )
     try:
         from app.core.database import AsyncSessionFactory
+        from sqlalchemy import text
 
         async with AsyncSessionFactory() as db:
+            try:
+                await db.execute(text("SET LOCAL row_security = off"))
+            except Exception:
+                pass
             service = ConversationService(db)
             await service.process_incoming_message(
                 phone_number_id=phone_number_id,

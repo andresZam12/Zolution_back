@@ -8,7 +8,7 @@ import logging
 import re
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -81,19 +81,35 @@ class ConversationService:
         )
 
         # 1. Look up AgentConfig by whatsapp_phone_number_id
+        try:
+            await self.db.execute(text("SET LOCAL row_security = off"))
+        except Exception:
+            pass
+
         stmt = select(AgentConfig).where(AgentConfig.whatsapp_phone_number_id == clean_phone_id)
         result = await self.db.execute(stmt)
         agent_config = result.scalar_one_or_none()
 
         if not agent_config:
-            # Fallback: find the active AgentConfig and associate it with this phone_number_id
-            stmt_fallback = (
-                select(AgentConfig)
-                .order_by(AgentConfig.updated_at.desc())
-                .limit(1)
-            )
-            result = await self.db.execute(stmt_fallback)
-            agent_config = result.scalar_one_or_none()
+            # RLS might be active on agent_configs without app.current_organization_id.
+            # The 'organizations' table has NO RLS, so we scan organizations to find the agent:
+            orgs_res = await self.db.execute(select(Organization).order_by(Organization.created_at.desc()))
+            orgs = list(orgs_res.scalars().all())
+            for org in orgs:
+                await self.db.execute(
+                    text("SELECT set_config('app.current_organization_id', :org_id, false)"),
+                    {"org_id": str(org.id)},
+                )
+                stmt_cfg = select(AgentConfig).where(AgentConfig.organization_id == org.id)
+                cfg_res = await self.db.execute(stmt_cfg)
+                cfg = cfg_res.scalar_one_or_none()
+                if cfg:
+                    if cfg.whatsapp_phone_number_id == clean_phone_id:
+                        agent_config = cfg
+                        break
+                    elif not agent_config:
+                        agent_config = cfg
+
             if agent_config:
                 agent_config.whatsapp_phone_number_id = clean_phone_id
                 agent_config.status = "active"
@@ -108,6 +124,12 @@ class ConversationService:
             return
 
         organization_id = str(agent_config.organization_id)
+
+        # Set RLS context for this tenant for all subsequent queries (Conversation, Message, Calendar)
+        await self.db.execute(
+            text("SELECT set_config('app.current_organization_id', :org_id, false)"),
+            {"org_id": organization_id},
+        )
 
         # Load Organization business name
         org_name = "tu negocio"
