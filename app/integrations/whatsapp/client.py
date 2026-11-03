@@ -23,7 +23,11 @@ class WhatsAppClient:
 
     @property
     def token(self) -> str:
-        return (self.settings.WHATSAPP_API_TOKEN or "").strip()
+        return (
+            self.settings.WHATSAPP_API_TOKEN
+            or self.settings.WHATSAPP_ACCESS_TOKEN
+            or ""
+        ).strip()
 
     async def send_text_message(self, phone_number_id: str, to: str, text: str) -> dict:
         """
