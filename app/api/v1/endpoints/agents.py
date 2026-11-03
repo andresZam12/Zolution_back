@@ -23,6 +23,8 @@ from app.agents.schemas import (
     AgentConfigResponse,
     AgentConfigUpdate,
     AgentStatusResponse,
+    AIEnrichRequest,
+    AIEnrichResponse,
     LLMProviderUpdate,
     OnboardingAnswersUpdate,
 )
@@ -96,6 +98,23 @@ async def get_my_agent_status(
 # ---------------------------------------------------------------------------
 # Owner write endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/ai-enrich",
+    response_model=AIEnrichResponse,
+    summary="AI Business Context Enrichment",
+    description=(
+        "Uses Gemini 3.8 Flash to analyze business name and niche, generating suggested "
+        "services with real market COP pricing, holiday policies, operating hours, and a Master System Prompt."
+    ),
+)
+async def ai_enrich_business(
+    payload: AIEnrichRequest,
+    user: UserContext = Depends(get_current_user),
+) -> AIEnrichResponse:
+    """Intelligently enrich business profile using AI."""
+    return await _service.ai_enrich_business(payload)
 
 
 @router.put(

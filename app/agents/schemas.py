@@ -41,6 +41,32 @@ class ServiceItem(BaseModel):
         ge=5,
         description="Approximate service duration in minutes.",
     )
+    description: str | None = Field(default=None, max_length=500)
+
+
+class AIEnrichRequest(BaseModel):
+    """Request to generate rich business context and pricing suggestions using AI."""
+
+    business_name: str = Field(..., min_length=2, max_length=200)
+    industry: str = Field(..., min_length=2, max_length=200)
+    city_or_country: str | None = Field(default="Colombia", max_length=150)
+    extra_notes: str | None = Field(default=None, max_length=1000)
+
+
+class AIEnrichResponse(BaseModel):
+    """Structured AI suggestions for business context and system prompt."""
+
+    agent_name: str
+    tone: str
+    services: list[ServiceItem]
+    schedule_weekdays: str
+    schedule_saturdays: str
+    holiday_policy: str
+    cancellation_policy: str
+    tolerance_minutes: int
+    payment_methods: list[str]
+    faqs: list[dict[str, str]]
+    recommended_system_prompt: str
 
 
 class OnboardingAnswers(BaseModel):
@@ -86,6 +112,29 @@ class OnboardingAnswers(BaseModel):
     handles_emergencies: bool = Field(
         default=False,
         description="Whether the business handles emergency cases.",
+    )
+    holiday_policy: str | None = Field(
+        default=None,
+        description="Operating policy on holidays, e.g. 'Solo hasta mediodía (8am - 1pm)' or 'Cerrado'.",
+    )
+    tolerance_minutes: int | None = Field(
+        default=15,
+        ge=0,
+        le=60,
+        description="Grace period in minutes before appointment is released.",
+    )
+    payment_methods: list[str] | str | None = Field(
+        default=None,
+        description="Accepted payment methods (Nequi, Daviplata, Tarjetas, Efectivo).",
+    )
+    faqs: list[dict[str, str]] | None = Field(
+        default=None,
+        description="Common niche questions and answers.",
+    )
+    city_or_country: str | None = Field(
+        default=None,
+        max_length=150,
+        description="City or country of the business.",
     )
 
     # Agent persona
