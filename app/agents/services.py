@@ -214,6 +214,8 @@ class AgentConfigService:
             if merged.get("industry") and not merged.get("business_type"):
                 merged["business_type"] = merged["industry"]
             config.onboarding_answers = merged
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(config, "onboarding_answers")
 
         new_org_name = data.company_name or (
             data.onboarding_answers.get("companyName") if data.onboarding_answers else None
