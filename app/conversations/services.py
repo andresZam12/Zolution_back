@@ -74,6 +74,17 @@ class ConversationService:
         agent_config = result.scalar_one_or_none()
 
         if not agent_config:
+            # Fallback: look up the active agent config and associate it with this phone_number_id
+            stmt = select(AgentConfig).order_by(AgentConfig.status.asc()).limit(1)
+            result = await self.db.execute(stmt)
+            agent_config = result.scalar_one_or_none()
+            if agent_config:
+                agent_config.whatsapp_phone_number_id = phone_number_id
+                self.db.add(agent_config)
+                await self.db.flush()
+                logger.info(f"Associated AgentConfig {agent_config.id} with phone_number_id {phone_number_id}")
+
+        if not agent_config:
             logger.warning(f"No AgentConfig found for phone_number_id: {phone_number_id}")
             return
 
