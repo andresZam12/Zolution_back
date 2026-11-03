@@ -49,6 +49,9 @@ class ConversationMessage:
             )
 
 
+LLMConversationMessage = ConversationMessage
+
+
 @dataclass(frozen=True)
 class LLMResponse:
     """

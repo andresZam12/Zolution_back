@@ -34,7 +34,7 @@ from app.agents.schemas import (
     OnboardingAnswers,
     ServiceItem,
 )
-from app.llm_providers.base import LLMConversationMessage
+from app.llm_providers.base import ConversationMessage as LLMConversationMessage
 from app.llm_providers.factory import LLMProviderFactory
 from app.tenants.models import Organization
 
