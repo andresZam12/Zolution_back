@@ -316,6 +316,13 @@ async def update_appointment_status(
             detail="Cita no encontrada.",
         )
 
+    if payload.status == "cancelled" and updated_item.get("googleEventId"):
+        try:
+            service = GoogleCalendarService(db, str(org_id))
+            await service.delete_appointment(updated_item["googleEventId"])
+        except Exception as exc:
+            logger.warning("Could not delete cancelled event from Google Calendar: %s", exc)
+
     ans["appointments"] = existing_apts
     cfg.onboarding_answers = ans
     flag_modified(cfg, "onboarding_answers")
@@ -323,3 +330,50 @@ async def update_appointment_status(
     await db.commit()
 
     return AppointmentItemSchema(**updated_item)
+
+
+@router.delete(
+    "/{appointment_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete an appointment and remove it from Google Calendar",
+)
+async def delete_appointment(
+    appointment_id: str,
+    user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict:
+    org_id = _require_org_id(user)
+    cfg = await _get_or_create_agent_config(db, org_id)
+    ans = dict(cfg.onboarding_answers or {})
+    existing_apts = ans.get("appointments")
+    if not isinstance(existing_apts, list):
+        existing_apts = []
+
+    target_item = None
+    remaining_apts = []
+    for item in existing_apts:
+        if isinstance(item, dict) and item.get("id") == appointment_id:
+            target_item = item
+        else:
+            remaining_apts.append(item)
+
+    if not target_item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Cita no encontrada.",
+        )
+
+    if target_item.get("googleEventId"):
+        try:
+            service = GoogleCalendarService(db, str(org_id))
+            await service.delete_appointment(target_item["googleEventId"])
+        except Exception as exc:
+            logger.warning("Could not delete appointment from Google Calendar: %s", exc)
+
+    ans["appointments"] = remaining_apts
+    cfg.onboarding_answers = ans
+    flag_modified(cfg, "onboarding_answers")
+    db.add(cfg)
+    await db.commit()
+
+    return {"status": "success", "message": "Cita eliminada y desincronizada de Google Calendar."}

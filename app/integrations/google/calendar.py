@@ -181,3 +181,52 @@ class GoogleCalendarService:
                 "html_link": "",
                 "message": f"Google Calendar HTTP {response.status_code}: {response.text}",
             }
+
+    async def delete_appointment(self, event_id: str) -> dict:
+        """
+        Delete an event from the primary Google Calendar by event_id.
+        """
+        if not event_id or event_id.startswith("local_") or event_id.startswith("pg_"):
+            return {"success": True, "message": "No external Google event ID to delete"}
+
+        try:
+            token = await self._get_access_token()
+        except Exception as e:
+            return {"success": False, "message": f"Could not obtain Google token: {e}"}
+
+        url = f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.delete(url, headers=headers)
+                if response.status_code in (200, 204, 404, 410):
+                    logger.info("Google Calendar event deleted successfully: %s", event_id)
+                    return {"success": True, "message": "Event deleted from Google Calendar"}
+                logger.error("Failed to delete Google Calendar event [HTTP %d]: %s", response.status_code, response.text)
+                return {"success": False, "message": f"Google Calendar HTTP {response.status_code}: {response.text}"}
+        except Exception as exc:
+            logger.warning("Error deleting event from Google Calendar: %s", exc)
+            return {"success": False, "message": str(exc)}
+
+    async def find_events(self, query: str) -> list[dict]:
+        """Search events in primary Google Calendar matching query string."""
+        if not query or len(query.strip()) < 3:
+            return []
+        try:
+            token = await self._get_access_token()
+            url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+            headers = {"Authorization": f"Bearer {token}"}
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                res = await client.get(url, headers=headers, params={"q": query.strip(), "maxResults": 10})
+                if res.status_code == 200:
+                    return res.json().get("items", [])
+        except Exception:
+            pass
+        return []
