@@ -4,14 +4,18 @@ Pydantic schemas for the WhatsApp Cloud API Webhooks.
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class WhatsAppText(BaseModel):
+class WhatsAppBaseModel(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+
+class WhatsAppText(WhatsAppBaseModel):
     body: str
 
 
-class WhatsAppMessage(BaseModel):
+class WhatsAppMessage(WhatsAppBaseModel):
     id: str
     from_: str = Field(alias="from")
     timestamp: str
@@ -19,16 +23,16 @@ class WhatsAppMessage(BaseModel):
     text: WhatsAppText | None = None
 
 
-class WhatsAppContactProfile(BaseModel):
+class WhatsAppContactProfile(WhatsAppBaseModel):
     name: str = "Cliente WhatsApp"
 
 
-class WhatsAppContact(BaseModel):
+class WhatsAppContact(WhatsAppBaseModel):
     profile: WhatsAppContactProfile = Field(default_factory=WhatsAppContactProfile)
     wa_id: str = ""
 
 
-class WhatsAppValue(BaseModel):
+class WhatsAppValue(WhatsAppBaseModel):
     messaging_product: str = "whatsapp"
     metadata: dict[str, Any] = Field(default_factory=dict)
     contacts: list[WhatsAppContact] | None = None
@@ -36,17 +40,17 @@ class WhatsAppValue(BaseModel):
     statuses: list[dict[str, Any]] | None = None
 
 
-class WhatsAppChange(BaseModel):
+class WhatsAppChange(WhatsAppBaseModel):
     field: str
     value: WhatsAppValue
 
 
-class WhatsAppEntry(BaseModel):
+class WhatsAppEntry(WhatsAppBaseModel):
     id: str
     changes: list[WhatsAppChange]
 
 
-class WhatsAppWebhookPayload(BaseModel):
+class WhatsAppWebhookPayload(WhatsAppBaseModel):
     """
     The root payload sent by Meta to the webhook.
     """

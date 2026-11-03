@@ -34,8 +34,8 @@ def configure_logging(level: str = "INFO") -> None:
     if not root_logger.handlers:
         root_logger.addHandler(handler)
 
-    # Silence overly verbose third-party loggers
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    # Keep uvicorn access logs visible for debugging webhooks and API calls
+    logging.getLogger("uvicorn.access").setLevel(logging.INFO)
     logging.getLogger("sqlalchemy.engine").setLevel(
         logging.INFO if level.upper() == "DEBUG" else logging.WARNING
     )

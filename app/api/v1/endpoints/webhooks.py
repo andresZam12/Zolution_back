@@ -17,6 +17,61 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+@router.get("/whatsapp/subscribe")
+@router.post("/whatsapp/subscribe")
+async def subscribe_whatsapp_waba():
+    """
+    Calls Meta Graph API to subscribe WABA and Phone to the webhook.
+    This registers the app so Meta forwards incoming WhatsApp messages to our callback URL.
+    """
+    import httpx
+    settings = get_settings()
+    token = (settings.WHATSAPP_API_TOKEN or "").strip()
+    if not token:
+        return {"error": "WHATSAPP_API_TOKEN is empty in environment"}
+
+    waba_id = "2329447784520377"
+    phone_id = (settings.WHATSAPP_PHONE_NUMBER_ID or "1402283359640718").strip()
+
+    results: dict = {
+        "waba_id": waba_id,
+        "phone_id": phone_id,
+        "token_prefix": token[:15] + "...",
+    }
+
+    async with httpx.AsyncClient() as client:
+        # 1. Subscribe WABA
+        try:
+            r1 = await client.post(
+                f"https://graph.facebook.com/v21.0/{waba_id}/subscribed_apps",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=12.0,
+            )
+            results["waba_subscription"] = {
+                "status_code": r1.status_code,
+                "data": r1.json() if "application/json" in r1.headers.get("content-type", "") else r1.text,
+            }
+        except Exception as e:
+            results["waba_subscription_error"] = str(e)
+
+        # 2. Check current subscriptions
+        try:
+            r2 = await client.get(
+                f"https://graph.facebook.com/v21.0/{waba_id}/subscribed_apps",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=12.0,
+            )
+            results["current_subscribed_apps"] = {
+                "status_code": r2.status_code,
+                "data": r2.json() if "application/json" in r2.headers.get("content-type", "") else r2.text,
+            }
+        except Exception as e:
+            results["check_subscription_error"] = str(e)
+
+    logger.info("Subscribed WABA results: %s", results)
+    return results
+
+
 @router.get("/whatsapp")
 async def verify_whatsapp_webhook(
     hub_mode: Annotated[str, Query(alias="hub.mode")] = "",
