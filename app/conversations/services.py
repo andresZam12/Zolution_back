@@ -35,25 +35,48 @@ class ConversationService:
         self.llm_factory = LLMProviderFactory()
 
     async def _get_or_create_conversation(
-        self, organization_id: str, customer_phone: str, customer_name: str | None
+        self, organization_id: str | uuid.UUID, customer_phone: str, customer_name: str | None
     ) -> Conversation:
-        """Fetch the latest active conversation for a customer, or create a new one."""
+        """Fetch the latest conversation for a customer in this organization, or create a new one."""
+        org_u = uuid.UUID(str(organization_id)) if not isinstance(organization_id, uuid.UUID) else organization_id
+        clean_phone = "".join(filter(str.isdigit, str(customer_phone)))
+        phone_variants = [customer_phone, clean_phone, f"+{clean_phone}"]
+
+        # 1. Search for existing conversation for this customer under this organization
         stmt = (
             select(Conversation)
             .where(
-                Conversation.organization_id == organization_id,
-                Conversation.customer_phone == customer_phone,
-                Conversation.status == "active",
+                Conversation.organization_id == org_u,
+                Conversation.customer_phone.in_(phone_variants),
             )
             .order_by(Conversation.created_at.desc())
         )
         result = await self.db.execute(stmt)
         conversation = result.scalars().first()
 
+        # 2. If not found in this org, check if customer already had a conversation in any org to reuse
+        if not conversation:
+            stmt_any = (
+                select(Conversation)
+                .where(Conversation.customer_phone.in_(phone_variants))
+                .order_by(Conversation.created_at.desc())
+            )
+            res_any = await self.db.execute(stmt_any)
+            existing_conv = res_any.scalars().first()
+            if existing_conv:
+                existing_conv.organization_id = org_u
+                existing_conv.status = "active"
+                if customer_name and customer_name != "Cliente":
+                    existing_conv.customer_name = customer_name
+                self.db.add(existing_conv)
+                await self.db.commit()
+                conversation = existing_conv
+
+        # 3. Only if absolutely no prior conversation exists for this customer, create one
         if not conversation:
             conversation = Conversation(
                 id=uuid.uuid4(),
-                organization_id=organization_id,
+                organization_id=org_u,
                 customer_phone=customer_phone,
                 customer_name=customer_name or "Cliente",
                 status="active",
@@ -397,18 +420,19 @@ class ConversationService:
             logger.error(f"Failed to send WhatsApp message to {customer_phone}: {e}")
 
     async def list_conversations(
-        self, organization_id: str, page: int = 1, page_size: int = 20
+        self, organization_id: str | uuid.UUID, page: int = 1, page_size: int = 20
     ) -> tuple[list[Conversation], int]:
         """
         List conversations for an organization with pagination and their latest message.
         """
         from sqlalchemy import func
 
+        org_u = uuid.UUID(str(organization_id)) if not isinstance(organization_id, uuid.UUID) else organization_id
         offset = (page - 1) * page_size
 
         # Count total
         count_stmt = select(func.count(Conversation.id)).where(
-            Conversation.organization_id == organization_id
+            Conversation.organization_id == org_u
         )
         count_res = await self.db.execute(count_stmt)
         total = count_res.scalar_one()
@@ -416,7 +440,7 @@ class ConversationService:
         # Fetch page with eager loaded messages
         stmt = (
             select(Conversation)
-            .where(Conversation.organization_id == organization_id)
+            .where(Conversation.organization_id == org_u)
             .options(selectinload(Conversation.messages))
             .order_by(Conversation.updated_at.desc())
             .offset(offset)
@@ -428,16 +452,18 @@ class ConversationService:
         return conversations, total
 
     async def get_conversation(
-        self, organization_id: str, conversation_id: str
+        self, organization_id: str | uuid.UUID, conversation_id: str | uuid.UUID
     ) -> Conversation | None:
         """
         Retrieve a specific conversation with all its messages.
         """
+        org_u = uuid.UUID(str(organization_id)) if not isinstance(organization_id, uuid.UUID) else organization_id
+        conv_u = uuid.UUID(str(conversation_id)) if not isinstance(conversation_id, uuid.UUID) else conversation_id
         stmt = (
             select(Conversation)
             .where(
-                Conversation.id == conversation_id,
-                Conversation.organization_id == organization_id,
+                Conversation.id == conv_u,
+                Conversation.organization_id == org_u,
             )
             .options(selectinload(Conversation.messages))
         )
