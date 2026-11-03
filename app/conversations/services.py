@@ -206,19 +206,13 @@ class ConversationService:
             f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
             "REGLAS OBLIGATORIAS DE RESPUESTA:\n"
             "- Hablas directamente con un cliente por WhatsApp. Sé siempre muy amable, cálido, conversacional y servicial.\n"
-            "- Termina siempre tus oraciones e ideas de forma 100% completa y coherente (máximo 2 a 3 frases breves). NUNCA cortes palabras a la mitad.\n"
-            "- Si el cliente saluda (ej: 'hola', 'buenas'), salúdalo amablemente, preséntate brevemente y pregúntale en qué le puedes colaborar hoy.\n"
-            "- Si el cliente consulta disponibilidad o pide cita o reunión, dale opciones claras de inmediato (ej: 'Tenemos disponibilidad a las 10:00 AM o a las 3:30 PM, ¿cuál te queda mejor?').\n"
-            f"- Ya conoces el nombre del cliente ({effective_customer_name}). Al agendar, NO le vuelvas a pedir su nombre ni su correo, confírmale directamente que la cita o reunión virtual ha quedado agendada.\n"
-            "- OBLIGATORIO AGENDAR: Cuando el cliente elija o confirme una fecha u hora (ej: 'el jueves a las 11 am', 'a las 10 am', 'agenda por favor'), "
-            "confirma de inmediato con entusiasmo que su cita o reunión ha quedado reservada y coloca SIEMPRE al final de tu mensaje el comando: "
-            f"[[AGENDAR|YYYY-MM-DD|HH:MM|{effective_customer_name}|Servicio]]\n"
-            "- OBLIGATORIO CANCELAR: Si el cliente solicita cancelar o anular su cita (ej: 'cancela mi cita', 'ya no puedo ir', 'anula la cita', 'deseo cancelar'), "
-            "confirma con amabilidad y calidez que su cita ha sido cancelada y coloca SIEMPRE al final el comando: "
-            f"[[CANCELAR|{effective_customer_name}]]\n"
-            "- OBLIGATORIO REAGENDAR: Si el cliente solicita reprogramar o cambiar su cita (ej: 'cámbiame la cita a las 4pm', 'mejor el viernes a las 11'), "
-            "confirma con amabilidad el cambio de horario y coloca SIEMPRE al final el comando: "
-            f"[[REAGENDAR|YYYY-MM-DD|HH:MM|{effective_customer_name}|Servicio]]\n"
+            f"- Ya conoces el nombre del cliente ({effective_customer_name}).\n"
+            "- CUANDO EL CLIENTE PIDA O CONFIRME UNA CITA (fecha/hora):\n"
+            f"  1. Redacta tu mensaje completo al cliente confirmando la fecha y la hora explícitamente en el texto (ej: '¡Con mucho gusto, {effective_customer_name}! Tu cita ha quedado agendada con éxito para mañana a las 10:30 AM. ¡Te esperamos!').\n"
+            "  2. NUNCA cortes la frase ni la dejes en coma o palabras a medias.\n"
+            f"  3. En un renglón aparte al final agrega el tag: [[AGENDAR|{tomorrow}|HH:MM]]\n"
+            "- SI EL CLIENTE PIDE CANCELAR: Confirma con amabilidad y al final pon: [[CANCELAR]]\n"
+            "- SI EL CLIENTE PIDE REAGENDAR O CAMBIAR HORA: Confirma el nuevo horario completo y al final pon: [[REAGENDAR|YYYY-MM-DD|HH:MM]]\n"
         )
 
         # 6. Call LLM with resilient candidates
@@ -250,9 +244,27 @@ class ConversationService:
             reply_text = f"¡Hola {effective_customer_name}! Gracias por comunicarte con {org_name}. ¿En qué podemos colaborarte hoy?"
 
         # 7. Check for commands: CANCELAR, REAGENDAR, AGENDAR
-        cancel_match = re.search(r"\[\[CANCELAR(?:\|([^\]]+))?\]\]", reply_text, re.IGNORECASE)
-        if cancel_match:
-            reply_text = re.sub(r"\[\[CANCELAR[^\]]*\]\]", "", reply_text).strip()
+        cmd_match = re.search(r"\[\[\s*(AGENDAR|REAGENDAR|CANCELAR)\b([^\]]*)\]\]", reply_text, re.IGNORECASE)
+        command_type = None
+        cmd_args = []
+        if cmd_match:
+            command_type = cmd_match.group(1).upper()
+            raw_args = cmd_match.group(2).strip()
+            if raw_args.startswith(("|", ":")):
+                raw_args = raw_args[1:].strip()
+            cmd_args = [p.strip() for p in raw_args.split("|") if p.strip()]
+
+        lower_user = text_content.lower()
+        # Failsafe: if user requested scheduling and specified time, but LLM tag was missing/malformed:
+        if not command_type and any(kw in lower_user for kw in ("agendar", "cita", "reservar", "programar")):
+            time_m = re.search(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)\b", lower_user, re.IGNORECASE)
+            if time_m:
+                command_type = "AGENDAR"
+                cmd_args = [tomorrow, time_m.group(1)]
+                logger.info(f"Failsafe intent detected AGENDAR for time: {time_m.group(1)}")
+
+        hh, mm = 10, 30
+        if command_type == "CANCELAR":
             try:
                 evs = await cal_service.find_events(effective_customer_name)
                 for ev in evs:
@@ -263,14 +275,8 @@ class ConversationService:
             except Exception as e:
                 logger.warning(f"Error deleting event on Google Calendar: {e}")
 
-        m_reagendar = re.search(r"\[\[REAGENDAR\|([^|\]]+)\|([^|\]]+)\|([^|\]]*)\|([^\]]*)\]\]", reply_text, re.IGNORECASE)
-        m_agendar = re.search(r"\[\[AGENDAR\|([^|\]]+)\|([^|\]]+)\|([^|\]]*)\|([^\]]*)\]\]", reply_text, re.IGNORECASE)
-
-        if m_reagendar or m_agendar:
-            match = m_reagendar or m_agendar
-            b_date, b_time, b_name, b_service = (g.strip() for g in match.groups())
-            if m_reagendar:
-                reply_text = re.sub(r"\[\[REAGENDAR[^\]]*\]\]", "", reply_text).strip()
+        elif command_type in ("AGENDAR", "REAGENDAR"):
+            if command_type == "REAGENDAR":
                 try:
                     evs = await cal_service.find_events(effective_customer_name)
                     for ev in evs:
@@ -279,28 +285,74 @@ class ConversationService:
                             break
                 except Exception:
                     pass
-            else:
-                reply_text = re.sub(r"\[\[AGENDAR[^\]]*\]\]", "", reply_text).strip()
 
-            # Schedule new appointment on Google Calendar
+            # Extract target date
+            b_date = tomorrow
+            if len(cmd_args) > 0:
+                dm = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", cmd_args[0])
+                if dm:
+                    b_date = dm.group(1)
+
+            # Extract time string
+            raw_time_str = ""
+            if len(cmd_args) > 1:
+                raw_time_str = cmd_args[1]
+            elif len(cmd_args) == 1 and not re.search(r"^\d{4}-\d{2}-\d{2}$", cmd_args[0]):
+                raw_time_str = cmd_args[0]
+            if not raw_time_str:
+                tm = re.search(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)\b", lower_user, re.IGNORECASE)
+                raw_time_str = tm.group(1) if tm else "10:30 AM"
+
+            # Parse hours & minutes accurately (handles '10:30 am', '10:30', '10am', '4pm')
+            raw_t_lower = raw_time_str.lower().strip()
+            is_pm = "pm" in raw_t_lower or "p.m." in raw_t_lower or "tarde" in raw_t_lower or "noche" in raw_t_lower
+            is_am = "am" in raw_t_lower or "a.m." in raw_t_lower
+            digits_colon = re.sub(r"[^\d:]", "", raw_t_lower)
+            if ":" in digits_colon:
+                t_parts = digits_colon.split(":")
+                hh = int(t_parts[0]) if t_parts[0].isdigit() else 10
+                mm = int(t_parts[1]) if len(t_parts) > 1 and t_parts[1].isdigit() else 0
+            elif digits_colon.isdigit():
+                hh = int(digits_colon)
+                mm = 0
+            if is_pm and hh < 12:
+                hh += 12
+            elif is_am and hh == 12:
+                hh = 0
+
+            b_name = cmd_args[2] if len(cmd_args) > 2 else effective_customer_name
+            b_service = cmd_args[3] if len(cmd_args) > 3 else "Asesoría especializada"
+
+            start_iso = f"{b_date}T{hh:02d}:{mm:02d}:00-05:00"
+            end_iso = f"{b_date}T{(hh+1):02d}:{mm:02d}:00-05:00"
+
             try:
-                parts = b_time.split(":")
-                hh = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 10
-                mm = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-                start_iso = f"{b_date}T{hh:02d}:{mm:02d}:00"
-                end_iso = f"{b_date}T{(hh+1):02d}:{mm:02d}:00"
-                await cal_service.create_appointment(
-                    customer_name=b_name or effective_customer_name,
+                cal_res = await cal_service.create_appointment(
+                    customer_name=b_name,
                     customer_phone=customer_phone,
                     start_time=start_iso,
                     end_time=end_iso,
+                    notes=b_service,
                 )
-                logger.info(f"Booked appointment on Google Calendar for {b_name} at {start_iso}")
+                logger.info(f"Booked appointment on Google Calendar for {b_name} at {start_iso}: {cal_res}")
             except Exception as e:
                 logger.warning(f"Error booking Google Calendar appointment: {e}")
 
-        # Final cleanup of any stray tags
-        reply_text = re.sub(r"\[\[[A-Z_]+[^\]]*\]\]", "", reply_text).strip()
+        # Clean tags from text
+        reply_text = re.sub(r"\[\[.*?\]\]", "", reply_text).strip()
+        reply_text = re.sub(r"\[.*?\]", "", reply_text).strip()
+
+        # Fix truncated sentences ending in incomplete prepositions or punctuation
+        reply_text = re.sub(r"[\s,;:-]+$", "", reply_text).strip()
+        if re.search(r"\b(para mañana|mañana|a las|a|el día)$", reply_text, re.IGNORECASE):
+            hh_12 = ((hh - 1) % 12) + 1
+            ampm = "PM" if hh >= 12 else "AM"
+            if re.search(r"\b(a las|a)$", reply_text, re.IGNORECASE):
+                reply_text = re.sub(r"\b(a las|a)$", f"a las {hh_12}:{mm:02d} {ampm}.", reply_text)
+            else:
+                reply_text = f"{reply_text} a las {hh_12}:{mm:02d} {ampm}."
+        elif not reply_text.endswith((".", "!", "?")):
+            reply_text = reply_text + "."
 
         # 8. Save assistant response to DB
         assistant_message = Message(
