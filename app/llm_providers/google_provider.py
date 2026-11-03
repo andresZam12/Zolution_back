@@ -41,21 +41,19 @@ from app.llm_providers.exceptions import (
 
 logger = logging.getLogger(__name__)
 
-GEMINI_3_8_FLASH = "gemini-3.8-flash"
-GEMINI_FLASH_LATEST = "gemini-flash-latest"
+GEMINI_1_5_FLASH = "gemini-1.5-flash"
+GEMINI_FLASH_LATEST = "gemini-1.5-flash"
 
 
 def _normalize_model_name(model: str) -> str:
     cleaned = (model or "").strip().lower()
     if not cleaned:
-        return GEMINI_3_8_FLASH
-    if "flash-latest" in cleaned or cleaned == GEMINI_FLASH_LATEST:
-        return GEMINI_FLASH_LATEST
+        return GEMINI_1_5_FLASH
+    if "flash" in cleaned:
+        return GEMINI_1_5_FLASH
     if "pro" in cleaned:
-        return "gemini-pro-latest"
-    if "3.8" in cleaned or "2.0" in cleaned or "2.5" in cleaned:
-        return GEMINI_3_8_FLASH
-    return cleaned
+        return "gemini-1.5-pro"
+    return GEMINI_1_5_FLASH
 
 
 class GoogleProvider(LLMProvider):
@@ -68,12 +66,12 @@ class GoogleProvider(LLMProvider):
     """
 
     PROVIDER_NAME = "google"
-    DEFAULT_MODEL = GEMINI_3_8_FLASH
+    DEFAULT_MODEL = GEMINI_1_5_FLASH
 
     def __init__(
         self,
         api_key: str = "",
-        model: str = GEMINI_3_8_FLASH,
+        model: str = GEMINI_1_5_FLASH,
     ) -> None:
         if not api_key:
             import os

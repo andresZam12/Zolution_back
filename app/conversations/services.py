@@ -37,7 +37,7 @@ class ConversationService:
     async def _get_or_create_conversation(
         self, organization_id: str, customer_phone: str, customer_name: str | None
     ) -> Conversation:
-        """Fetch active conversation for a customer, or create a new one."""
+        """Fetch the latest active conversation for a customer, or create a new one."""
         stmt = (
             select(Conversation)
             .where(
@@ -45,9 +45,10 @@ class ConversationService:
                 Conversation.customer_phone == customer_phone,
                 Conversation.status == "active",
             )
+            .order_by(Conversation.created_at.desc())
         )
         result = await self.db.execute(stmt)
-        conversation = result.scalar_one_or_none()
+        conversation = result.scalars().first()
 
         if not conversation:
             conversation = Conversation(
@@ -148,15 +149,15 @@ class ConversationService:
         self.db.add(user_message)
         await self.db.commit()
 
-        # 4. Prepare message history for LLM (queried cleanly from DB)
+        # 4. Prepare message history for LLM in natural chronological order
         stmt_history = (
             select(Message)
             .where(Message.conversation_id == conversation.id)
-            .order_by(Message.created_at.desc())
-            .limit(10)
+            .order_by(Message.created_at.asc())
         )
         hist_res = await self.db.execute(stmt_history)
-        recent_msgs = list(reversed(hist_res.scalars().all()))
+        all_msgs = list(hist_res.scalars().all())
+        recent_msgs = all_msgs[-20:]
 
         history_msgs = [
             ConversationMessage(role=m.role, content=m.content.strip())
@@ -206,18 +207,20 @@ class ConversationService:
             f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
             "REGLAS OBLIGATORIAS DE RESPUESTA:\n"
             "- Hablas directamente con un cliente por WhatsApp. Sé siempre muy amable, cálido, conversacional y servicial.\n"
+            "- Mantén siempre coherencia y memoria con los mensajes anteriores de la conversación.\n"
             f"- Ya conoces el nombre del cliente ({effective_customer_name}).\n"
             "- CUANDO EL CLIENTE PIDA O CONFIRME UNA CITA (fecha/hora):\n"
             f"  1. Redacta tu mensaje completo al cliente confirmando la fecha y la hora explícitamente en el texto (ej: '¡Con mucho gusto, {effective_customer_name}! Tu cita ha quedado agendada con éxito para mañana a las 10:30 AM. ¡Te esperamos!').\n"
             "  2. NUNCA cortes la frase ni la dejes en coma o palabras a medias.\n"
             f"  3. En un renglón aparte al final agrega el tag: [[AGENDAR|{tomorrow}|HH:MM]]\n"
+            "- IMPORTANTE: Si la cita ya quedó agendada en un mensaje anterior y el cliente solo agradece, se despide o hace otra pregunta, responde con amabilidad SIN volver a emitir el tag [[AGENDAR]].\n"
             "- SI EL CLIENTE PIDE CANCELAR: Confirma con amabilidad y al final pon: [[CANCELAR]]\n"
             "- SI EL CLIENTE PIDE REAGENDAR O CAMBIAR HORA: Confirma el nuevo horario completo y al final pon: [[REAGENDAR|YYYY-MM-DD|HH:MM]]\n"
         )
 
         # 6. Call LLM with resilient candidates
         candidates = [
-            ("google", "gemini-3.8-flash"),
+            ("google", "gemini-1.5-flash"),
             ("google", "gemini-flash-latest"),
             ("openai", "gpt-4o-mini"),
         ]
@@ -230,7 +233,7 @@ class ConversationService:
                         system_prompt=system_prompt,
                         messages=history_msgs,
                         temperature=0.3,
-                        max_tokens=500,
+                        max_tokens=1000,
                     ),
                     timeout=12.0,
                 )
@@ -326,21 +329,37 @@ class ConversationService:
             start_iso = f"{b_date}T{hh:02d}:{mm:02d}:00-05:00"
             end_iso = f"{b_date}T{(hh+1):02d}:{mm:02d}:00-05:00"
 
+            # Prevent duplicate bookings for the same customer at the same slot
+            already_booked = False
             try:
-                cal_res = await cal_service.create_appointment(
-                    customer_name=b_name,
-                    customer_phone=customer_phone,
-                    start_time=start_iso,
-                    end_time=end_iso,
-                    notes=b_service,
+                evs = await cal_service.find_events(b_name)
+                slot_prefix = start_iso[:16]
+                already_booked = any(
+                    ev.get("start", {}).get("dateTime", "").startswith(slot_prefix)
+                    for ev in evs
                 )
-                logger.info(f"Booked appointment on Google Calendar for {b_name} at {start_iso}: {cal_res}")
-            except Exception as e:
-                logger.warning(f"Error booking Google Calendar appointment: {e}")
+            except Exception as ev_err:
+                logger.info(f"Could not check existing calendar events: {ev_err}")
 
-        # Clean tags from text
+            if already_booked:
+                logger.info(f"Event for {b_name} at {start_iso[:16]} already exists in Google Calendar. Skipping duplicate creation.")
+            else:
+                try:
+                    cal_res = await cal_service.create_appointment(
+                        customer_name=b_name,
+                        customer_phone=customer_phone,
+                        start_time=start_iso,
+                        end_time=end_iso,
+                        notes=b_service,
+                    )
+                    logger.info(f"Booked appointment on Google Calendar for {b_name} at {start_iso}: {cal_res}")
+                except Exception as e:
+                    logger.warning(f"Error booking Google Calendar appointment: {e}")
+
+        # Clean tags from text - ONLY strip double brackets [[...]], NEVER single brackets
+        reply_text = re.sub(r"\[\[\s*[A-Z_]+[^\]]*\]\]", "", reply_text).strip()
         reply_text = re.sub(r"\[\[.*?\]\]", "", reply_text).strip()
-        reply_text = re.sub(r"\[.*?\]", "", reply_text).strip()
+        reply_text = re.sub(r"\[\[.*$", "", reply_text).strip()
 
         # Fix truncated sentences ending in incomplete prepositions or punctuation
         reply_text = re.sub(r"[\s,;:-]+$", "", reply_text).strip()

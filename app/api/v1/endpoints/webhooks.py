@@ -16,6 +16,9 @@ from app.integrations.whatsapp.schemas import WhatsAppWebhookPayload
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# In-memory deduplication set to avoid processing duplicate webhook deliveries from Meta
+_PROCESSED_MESSAGE_IDS: set[str] = set()
+
 
 @router.get("/whatsapp/subscribe")
 @router.post("/whatsapp/subscribe")
@@ -136,6 +139,15 @@ async def receive_whatsapp_webhook(
                 continue
 
             message = value.messages[0]
+            msg_id = getattr(message, "id", None)
+            if msg_id and msg_id in _PROCESSED_MESSAGE_IDS:
+                logger.info(f"Ignored duplicate incoming WhatsApp message: {msg_id}")
+                continue
+            if msg_id:
+                _PROCESSED_MESSAGE_IDS.add(msg_id)
+                if len(_PROCESSED_MESSAGE_IDS) > 2000:
+                    _PROCESSED_MESSAGE_IDS.clear()
+
             contact = value.contacts[0] if (value.contacts and len(value.contacts) > 0) else None
 
             # We only process text messages
