@@ -45,7 +45,6 @@ class ConversationService:
                 Conversation.customer_phone == customer_phone,
                 Conversation.status == "active",
             )
-            .options(selectinload(Conversation.messages))
         )
         result = await self.db.execute(stmt)
         conversation = result.scalar_one_or_none()
@@ -59,9 +58,7 @@ class ConversationService:
                 status="active",
             )
             self.db.add(conversation)
-            await self.db.flush()
-            # Initialize empty messages list for the LLM
-            conversation.messages = []
+            await self.db.commit()
 
         return conversation
 
@@ -149,13 +146,21 @@ class ConversationService:
             content=text_content,
         )
         self.db.add(user_message)
-        conversation.messages.append(user_message)
         await self.db.commit()
 
-        # 4. Prepare message history for LLM
+        # 4. Prepare message history for LLM (queried cleanly from DB)
+        stmt_history = (
+            select(Message)
+            .where(Message.conversation_id == conversation.id)
+            .order_by(Message.created_at.desc())
+            .limit(10)
+        )
+        hist_res = await self.db.execute(stmt_history)
+        recent_msgs = list(reversed(hist_res.scalars().all()))
+
         history_msgs = [
             ConversationMessage(role=m.role, content=m.content.strip())
-            for m in conversation.messages[-8:]
+            for m in recent_msgs
             if m.content and m.content.strip()
         ]
 
