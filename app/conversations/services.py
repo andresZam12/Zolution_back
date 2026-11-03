@@ -197,8 +197,29 @@ class ConversationService:
         # 5. Build system prompt
         ans = dict((agent_config.onboarding_answers or {}) or {})
         agent_name = ans.get("agentName") or ans.get("agent_name") or "Asistente"
-        services_text = ans.get("services") or "Asesoría y atención especializada"
-        schedule_text = ans.get("schedule") or "Lunes a Viernes 8:00 AM - 6:00 PM"
+        
+        # Build catalog of services and pricing from onboarding answers
+        raw_services = ans.get("services")
+        services_lines = []
+        if isinstance(raw_services, list):
+            for s in raw_services:
+                if isinstance(s, dict):
+                    sn = s.get("name") or s.get("service") or ""
+                    sp = s.get("price_cop") or s.get("price") or ""
+                    sd = s.get("duration_minutes") or s.get("duration") or ""
+                    l = f"- {sn}"
+                    if sp:
+                        l += f": ${sp:,} COP" if isinstance(sp, (int, float)) else f": {sp}"
+                    if sd:
+                        l += f" ({sd} min)"
+                    services_lines.append(l)
+                elif isinstance(s, str) and s.strip():
+                    services_lines.append(f"- {s.strip()}")
+        elif isinstance(raw_services, str) and raw_services.strip():
+            services_lines.append(raw_services.strip())
+        services_text = "\n".join(services_lines) if services_lines else "- Asesoría y diseño web / desarrollo de software"
+
+        schedule_text = ans.get("schedule") or ans.get("hours") or "Lunes a Viernes 8:00 AM - 6:00 PM"
 
         now_co = datetime.utcnow() - timedelta(hours=5)
         tomorrow = (now_co + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -206,6 +227,23 @@ class ConversationService:
         avail_info = default_avail
 
         cal_service = GoogleCalendarService(self.db, organization_id)
+        
+        # Check if customer already has a scheduled appointment in Google Calendar
+        existing_appointment_info = "No hay citas previas agendadas registradas."
+        try:
+            evs = await cal_service.find_events(effective_customer_name)
+            if evs:
+                active_evs = []
+                for ev in evs:
+                    st = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date") or ""
+                    sm = ev.get("summary") or "Cita"
+                    if st:
+                        active_evs.append(f"{sm} el {st}")
+                if active_evs:
+                    existing_appointment_info = "; ".join(active_evs[:3])
+        except Exception as e_ev:
+            logger.info(f"Could not load customer existing appointments: {e_ev}")
+
         lower_msg = text_content.lower()
         needs_calendar = any(
             kw in lower_msg
@@ -231,16 +269,19 @@ class ConversationService:
             f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
             f"Cliente con quien hablas: {effective_customer_name}\n"
             f"Teléfono del cliente: {customer_phone}\n"
+            f"Catálogo de Servicios y Tarifas:\n{services_text}\n"
             f"Horario de atención: {schedule_text}\n"
-            f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
-            "REGLAS ESTRICTAS DE RESPUESTA EN WHATSAPP:\n"
-            "1. BREVEDAD: Responde siempre en máximo 1 o 2 oraciones breves, cálidas y directas. NUNCA envíes párrafos largos ni repitas descripciones corporativas o listas de servicios completas.\n"
-            "2. ORACIONES COMPLETAS: Cada oración debe tener sentido gramatical completo y terminar con su punto final (ej: '¡Listo, Andrés! Tu cita ha quedado agendada para mañana a las 10:30 AM. ¡Te esperamos!'). NUNCA dejes frases cortadas ni incompletas.\n"
-            "3. COMANDOS DE ACCIÓN (siempre en una línea nueva al final del mensaje):\n"
-            f"   - Agendar cita: Confirma la hora completa en el texto y al final pon en renglón aparte: [[AGENDAR|{tomorrow}|HH:MM]]\n"
-            "   - Cancelar: Confirma la cancelación en el texto y al final pon en renglón aparte: [[CANCELAR]]\n"
-            "   - Reagendar: Confirma el nuevo horario en el texto y al final pon en renglón aparte: [[REAGENDAR|YYYY-MM-DD|HH:MM]]\n"
-            "   - Agradecimiento o despedida: Responde con amabilidad en 1 frase (ej: '¡Con mucho gusto! Feliz día.') SIN incluir ningún comando ni tag.\n"
+            f"Cita(s) agendada(s) del cliente en el calendario: {existing_appointment_info}\n"
+            f"Disponibilidad general para agendar ({tomorrow}): {avail_info}\n\n"
+            "DIRECTRICES DE RESPUESTA EN WHATSAPP:\n"
+            "1. COMUNICACIÓN NATURAL Y COMPLETA: Responde siempre con calidez, empatía y sentido completo. Si el cliente hace varias preguntas en un solo mensaje (ej: pregunta cuándo es su cita Y cuánto cuesta un servicio), responde AMBAS preguntas con claridad y amabilidad.\n"
+            "2. LONGITUD: Mantén respuestas ágiles de WhatsApp (de 2 a 4 oraciones bien redactadas), evitando párrafos innecesariamente largos pero NUNCA cortando oraciones ni dejando ideas a medias.\n"
+            "3. CONSULTAS DE CITAS EXISTENTES: Si el cliente pregunta cuándo es su cita o pide recordarle el horario, respóndele con la información de su cita registrada en el calendario SIN emitir ningún comando ni tag.\n"
+            "4. COMANDOS DE ACCIÓN (SOLO cuando el cliente solicita o confirma una fecha/hora nueva):\n"
+            f"   - Agendar nueva cita: Confirma la fecha y hora en el texto y al final pon en renglón nuevo: [[AGENDAR|{tomorrow}|HH:MM]]\n"
+            "   - Reagendar / cambiar hora: Confirma el nuevo horario en el texto y al final pon en renglón nuevo: [[REAGENDAR|YYYY-MM-DD|HH:MM]]\n"
+            "   - Cancelar: Confirma la cancelación en el texto y al final pon en renglón nuevo: [[CANCELAR]]\n"
+            "   - Preguntas generales, consultas de precios o agradecimientos: Responde cordialmente SIN agregar ningún comando ni corchetes.\n"
         )
 
         # 6. Call LLM with resilient candidates
@@ -258,7 +299,7 @@ class ConversationService:
                         system_prompt=system_prompt,
                         messages=history_msgs,
                         temperature=0.3,
-                        max_tokens=250,
+                        max_tokens=800,
                     ),
                     timeout=12.0,
                 )
@@ -381,10 +422,15 @@ class ConversationService:
                 except Exception as e:
                     logger.warning(f"Error booking Google Calendar appointment: {e}")
 
-        # Clean tags from text - ONLY strip double brackets [[...]], NEVER single brackets
-        reply_text = re.sub(r"\[\[\s*[A-Z_]+[^\]]*\]\]", "", reply_text).strip()
-        reply_text = re.sub(r"\[\[.*?\]\]", "", reply_text).strip()
-        reply_text = re.sub(r"\[\[.*$", "", reply_text).strip()
+        # Clean tags safely from reply_text:
+        # Strip ONLY the bracketed command tags, NEVER strip surrounding conversation text
+        reply_text = re.sub(r"\[\[\s*[A-Z_]+[^\]]*\]\]?", "", reply_text)
+        reply_text = re.sub(r"\[\[.*?\]\]?", "", reply_text)
+        # If there's an unclosed bracket tag at the very end of the string, remove only the tail
+        reply_text = re.sub(r"\[\[[A-Za-z0-9_|:\- ]*$", "", reply_text)
+        # Clean double spaces or excess blank lines
+        reply_text = re.sub(r"[ \t]{2,}", " ", reply_text)
+        reply_text = re.sub(r"\n{3,}", "\n\n", reply_text).strip()
 
         # Fix truncated sentences ending in incomplete prepositions or punctuation
         reply_text = re.sub(r"[\s,;:-]+$", "", reply_text).strip()
@@ -396,7 +442,7 @@ class ConversationService:
                 reply_text = re.sub(r"\b(a las|a)$", f"a las {hh_12}:{mm:02d} {ampm}.", reply_text)
             else:
                 reply_text = f"{reply_text} a las {hh_12}:{mm:02d} {ampm}."
-        elif not reply_text.endswith((".", "!", "?")):
+        elif reply_text and not reply_text.endswith((".", "!", "?")):
             reply_text = reply_text + "."
 
         # 8. Save assistant response to DB
