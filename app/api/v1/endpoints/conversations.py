@@ -336,11 +336,11 @@ async def simulate_conversation_turn(
             f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
             "REGLAS OBLIGATORIAS DE RESPUESTA:\n"
             "- Hablas directamente con un cliente por WhatsApp. Sé siempre muy amable, cálido, conversacional y servicial.\n"
-            "- Termina siempre tus oraciones e ideas de forma completa y coherente (máximo 2 a 3 frases breves).\n"
+            "- Termina siempre tus oraciones e ideas de forma 100% completa y coherente (máximo 2 a 3 frases breves). NUNCA cortes palabras a la mitad.\n"
             "- Si el cliente saluda (ej: 'hola', 'buenas'), salúdalo amablemente, preséntate brevemente y pregúntale en qué le puedes colaborar hoy.\n"
-            "- Si el cliente consulta disponibilidad o pide cita, dale opciones claras de inmediato (ej: 'Tenemos turnos disponibles a las 10:00 AM o a las 3:30 PM, ¿cuál te queda mejor?').\n"
+            "- Si el cliente consulta disponibilidad o pide cita o reunión, dale opciones claras de inmediato (ej: 'Tenemos disponibilidad a las 10:00 AM o a las 3:30 PM, ¿cuál te queda mejor?').\n"
             "- OBLIGATORIO: Cuando el cliente elija o confirme una fecha u hora (ej: 'el miércoles a las 4 pm', 'a las 10 am', 'agenda por favor'), "
-            "confirma de inmediato con entusiasmo que su cita ha quedado reservada y coloca SIEMPRE al final de tu mensaje el comando: "
+            "confirma de inmediato con entusiasmo que su cita o reunión ha quedado reservada y coloca SIEMPRE al final de tu mensaje el comando: "
             "[[AGENDAR|YYYY-MM-DD|HH:MM|Nombre del cliente|Servicio]]\n"
         )
 
@@ -391,7 +391,7 @@ async def simulate_conversation_turn(
                         system_prompt=system_prompt,
                         messages=history_msgs,
                         temperature=0.3,
-                        max_tokens=800,
+                        max_tokens=2048,
                     ),
                     timeout=14.0,
                 )

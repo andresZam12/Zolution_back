@@ -519,7 +519,7 @@ class AgentConfigService:
                     system_prompt=system_instruction,
                     messages=[LLMConversationMessage(role="user", content=user_content)],
                     temperature=0.2,
-                    max_tokens=1000,
+                    max_tokens=2048,
                 ),
                 timeout=8.0,
             )
