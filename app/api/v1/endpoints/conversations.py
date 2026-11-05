@@ -29,6 +29,7 @@ from app.conversations.schemas import (
 )
 from app.conversations.services import ConversationService
 from app.core.database import bind_tenant, get_db_session
+from app.core.time_format import BOGOTA, format_time_12h
 from app.integrations.google.calendar import GoogleCalendarService
 from app.llm_providers.base import ConversationMessage as LLMConversationMessage
 from app.llm_providers.factory import LLMProviderFactory
@@ -338,12 +339,13 @@ async def simulate_conversation_turn(
             f"{base_prompt}\n\n"
             "--- CONTEXTO EN TIEMPO REAL (no lo menciones como 'contexto') ---\n"
             f"Negocio: {org_name}\n"
-            f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
+            f"Fecha y hora actual: {now_co:%Y-%m-%d} {format_time_12h(now_co.replace(tzinfo=BOGOTA))} (hora Colombia)\n"
             f"Cliente con quien hablas: {customer_name}\n"
             f"Servicios: {services_text}\n"
             f"Horario de atención: {schedule_text}\n"
             f"Disponibilidad de citas ({tomorrow}): {avail_info}\n\n"
             "REGLAS OBLIGATORIAS DE RESPUESTA:\n"
+            "FORMATO DE HORA: al escribirle al cliente usa siempre el formato de 12 horas (ej: 3:00 PM), nunca el de 24 horas. El formato HH:MM de 24 horas se usa solamente dentro de los comandos entre corchetes.\n"
             "- Hablas directamente con un cliente por WhatsApp. Sé siempre muy amable, cálido, conversacional y servicial.\n"
             "- Termina siempre tus oraciones e ideas de forma 100% completa y coherente (máximo 2 a 3 frases breves). NUNCA cortes palabras a la mitad.\n"
             "- Si el cliente saluda (ej: 'hola', 'buenas'), salúdalo amablemente, preséntate brevemente y pregúntale en qué le puedes colaborar hoy.\n"
@@ -448,7 +450,7 @@ async def simulate_conversation_turn(
                 action = "reschedule" if command_type == "REAGENDAR" else "book"
                 tool_called = (
                     f"{action}_appointment(date='{outcome.booked_start:%Y-%m-%d}', "
-                    f"time='{outcome.booked_start:%H:%M}')"
+                    f"time='{format_time_12h(outcome.booked_start)}')"
                 )
 
         # 9. Without a model reply nothing can be understood, so nothing is booked

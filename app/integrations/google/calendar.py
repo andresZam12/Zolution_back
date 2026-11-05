@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.core.database import bind_tenant
+from app.core.time_format import format_time_12h
 from app.integrations.models import IntegrationCredential
 
 CALENDAR_NOT_CONNECTED = "Calendario no conectado aún."
@@ -120,9 +121,11 @@ class GoogleCalendarService:
                 payload = response.json()
                 busy_list = payload.get("calendars", {}).get("primary", {}).get("busy", [])
                 if not busy_list:
-                    return f"El calendario tiene disponibilidad completa el {date_str} entre las 08:00 y las 18:00."
+                    return f"El calendario tiene disponibilidad completa el {date_str} entre las 8:00 AM y las 6:00 PM."
                 busy_summary = ", ".join(
-                    f"{b.get('start', '')} a {b.get('end', '')}" for b in busy_list
+                    f"{format_time_12h(datetime.fromisoformat(b['start']))} a "
+                    f"{format_time_12h(datetime.fromisoformat(b['end']))}"
+                    for b in busy_list
                 )
                 return f"Horarios ocupados el {date_str}: {busy_summary}. El resto del horario laboral está disponible."
         except Exception:

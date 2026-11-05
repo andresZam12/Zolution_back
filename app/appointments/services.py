@@ -10,19 +10,19 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from enum import StrEnum
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.appointments.models import Appointment
+from app.core.time_format import BOGOTA
 from app.integrations.google.calendar import GoogleCalendarService
 
 logger = logging.getLogger(__name__)
 
-BOGOTA = timezone(timedelta(hours=-5))
 DEFAULT_DURATION = timedelta(hours=1)
 DEFAULT_SERVICE = "Asesoría especializada"
 _OVERLAP_CONSTRAINT = "appointments_no_overlap"
@@ -170,6 +170,18 @@ class AppointmentService:
         )
         return [a for a in result.scalars().all() if phones_match(a.customer_phone, customer_phone)]
 
+    async def _lock_agenda(self) -> None:
+        """
+        Queue this tenant's agenda changes until the transaction ends.
+
+        Concurrent inserts under an exclusion constraint can deadlock each other.
+        Taking turns avoids that, and the constraint still decides who gets the slot.
+        """
+        await self.db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:org))"),
+            {"org": str(self.organization_id)},
+        )
+
     async def _calendar_conflict(
         self, start: datetime, end: datetime, moving: Appointment | None
     ) -> bool:
@@ -237,6 +249,7 @@ class AppointmentService:
             status="confirmed",
             source=source,
         )
+        await self._lock_agenda()
         try:
             async with self.db.begin_nested():
                 self.db.add(appointment)
@@ -270,6 +283,7 @@ class AppointmentService:
             return BookingResult(stop)
 
         previous_event_id = appointment.google_event_id
+        await self._lock_agenda()
         try:
             async with self.db.begin_nested():
                 appointment.starts_at = start
@@ -309,6 +323,7 @@ class AppointmentService:
 
     async def set_status(self, appointment: Appointment, status: str) -> bool:
         """Change the status. Returns False if reactivating it would overlap another one."""
+        await self._lock_agenda()
         try:
             async with self.db.begin_nested():
                 appointment.status = status

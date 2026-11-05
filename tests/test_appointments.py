@@ -5,7 +5,7 @@ Dashboard and simulator appointment tests. Requires TEST_DATABASE_URL (see conft
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -18,6 +18,7 @@ from app.appointments.services import BOGOTA
 from app.core import database
 from app.core.database import bind_tenant
 from app.core.security import create_access_token
+from app.core.time_format import format_time_12h
 from app.main import app
 from app.tenants.models import Organization
 from tests.conftest import requires_postgres
@@ -91,7 +92,7 @@ async def test_panel_books_without_google_and_lists_the_appointment(sessions, ap
     assert (item["patientName"], item["date"], item["time"], item["status"]) == (
         "Ana",
         NEXT_WEEK,
-        "10:00 - 10:45",
+        "10:00 AM - 10:45 AM",
         "confirmed",
     )
 
@@ -194,7 +195,7 @@ async def test_availability_without_google_reports_the_agenda(sessions, api):
         response = await client.get(f"{URL}/availability", params={"date": NEXT_WEEK}, headers=headers)
 
     assert response.json()["google_connected"] is False
-    assert "10:00 - 10:45 (Ana)" in response.json()["availability"]
+    assert "10:00 AM - 10:45 AM (Ana)" in response.json()["availability"]
 
 
 @requires_postgres
@@ -271,3 +272,15 @@ def _migration():
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.parametrize(
+    ("hour", "minute", "expected"),
+    [(0, 5, "12:05 AM"), (9, 0, "9:00 AM"), (12, 0, "12:00 PM"), (15, 30, "3:30 PM"), (23, 59, "11:59 PM")],
+)
+def test_times_are_shown_in_12_hour_format(hour, minute, expected):
+    assert format_time_12h(datetime(2026, 11, 20, hour, minute, tzinfo=BOGOTA)) == expected
+
+
+def test_times_are_shown_in_colombian_local_time():
+    assert format_time_12h(datetime(2026, 11, 20, 20, 0, tzinfo=UTC)) == "3:00 PM"

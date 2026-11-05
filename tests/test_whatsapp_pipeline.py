@@ -97,8 +97,10 @@ class FakeCalendar:
 class FakeLLM:
     reply = "Hola"
     histories: ClassVar[list[list[tuple[str, str]]]] = []
+    prompts: ClassVar[list[str]] = []
 
     async def generate(self, system_prompt, messages, temperature, max_tokens):
+        FakeLLM.prompts.append(system_prompt)
         FakeLLM.histories.append([(m.role, m.content) for m in messages])
         return SimpleNamespace(content=FakeLLM.reply)
 
@@ -120,6 +122,7 @@ def fakes(monkeypatch):
     FakeCalendar.reset()
     FakeLLM.reply = "Hola"
     FakeLLM.histories = []
+    FakeLLM.prompts = []
     FakeWhatsApp.sent = []
     monkeypatch.setattr(services, "GoogleCalendarService", FakeCalendar)
     monkeypatch.setattr(services, "LLMProviderFactory", FakeFactory)
@@ -421,16 +424,20 @@ async def test_repeating_a_confirmed_slot_does_not_duplicate_it(sessions):
 async def test_simultaneous_requests_get_exactly_one_booking(sessions):
     organization_id = await _add_tenant(sessions, "Negocio", "111")
 
-    async def request(phone: str):
-        async with sessions() as db:
-            await bind_tenant(db, organization_id)
-            service = AppointmentService(db, organization_id, FakeCalendar(db, organization_id))
-            return (await service.book("Ana", phone, _at(10), _at(11), "Consulta", "whatsapp")).outcome
+    # Several rounds: the deadlock this guards against only appeared intermittently
+    for hour in (8, 10, 12, 14, 16):
+        async def request_slot(phone: str, start: int = hour):
+            async with sessions() as db:
+                await bind_tenant(db, organization_id)
+                service = AppointmentService(db, organization_id, FakeCalendar(db, organization_id))
+                result = await service.book("Ana", phone, _at(start), _at(start + 1), "Consulta", "whatsapp")
+                return result.outcome
 
-    outcomes = await asyncio.gather(*(request(f"57300000000{i}") for i in range(5)))
+        outcomes = await asyncio.gather(*(request_slot(f"57300000000{i}") for i in range(5)))
 
-    assert sorted(outcomes) == sorted([BookingOutcome.BOOKED] + [BookingOutcome.SLOT_TAKEN] * 4)
-    assert len(await _appointments(sessions, organization_id)) == 1
+        assert sorted(outcomes) == sorted([BookingOutcome.BOOKED] + [BookingOutcome.SLOT_TAKEN] * 4)
+
+    assert len(await _appointments(sessions, organization_id)) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -673,3 +680,26 @@ async def test_availability_covers_the_colombian_day(monkeypatch):
     assert seen["timeMin"] == "2026-12-31T00:00:00-05:00"
     assert seen["timeMax"] == "2027-01-01T00:00:00-05:00"
     assert seen["timeZone"] == "America/Bogota"
+
+
+@pytest.mark.asyncio
+async def test_availability_reports_busy_hours_in_12_hour_format(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        busy = [{"start": "2026-11-20T14:00:00-05:00", "end": "2026-11-20T15:30:00-05:00"}]
+        return httpx.Response(200, json={"calendars": {"primary": {"busy": busy}}})
+
+    availability = await _google_calendar(monkeypatch, handler).get_availability("2026-11-20")
+
+    assert "2:00 PM a 3:30 PM" in availability
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_agent_is_told_to_use_12_hour_format(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, CUSTOMER, 15, "event")
+
+    await _incoming(sessions, "111", "¿a qué hora es mi cita?")
+
+    assert "a las 3:00 PM" in FakeLLM.prompts[-1]
+    assert "formato de 12 horas" in FakeLLM.prompts[-1]

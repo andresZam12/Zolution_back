@@ -20,6 +20,7 @@ from app.appointments.services import BOGOTA, AppointmentService, BookingOutcome
 from app.auth.dependencies import get_current_user
 from app.auth.models import UserContext
 from app.core.database import bind_tenant, get_db_session
+from app.core.time_format import format_time_12h
 from app.integrations.google.calendar import CALENDAR_NOT_CONNECTED, GoogleCalendarService
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,7 @@ def _to_item(appointment: Appointment) -> AppointmentItemSchema:
         phone=appointment.customer_phone,
         service=appointment.service,
         date=start.strftime("%Y-%m-%d"),
-        time=f"{start:%H:%M} - {end:%H:%M}",
+        time=f"{format_time_12h(start)} - {format_time_12h(end)}",
         status=appointment.status,
         googleEventId=appointment.google_event_id or "",
         htmlLink=appointment.html_link,
@@ -181,7 +182,7 @@ async def check_availability(
 
     config = (await db.execute(select(AgentConfig))).scalar_one_or_none()
     answers = (config.onboarding_answers or {}) if config else {}
-    schedule = answers.get("schedule") or "Lunes a Viernes 08:00 - 18:00"
+    schedule = answers.get("schedule") or "Lunes a Viernes 8:00 AM - 6:00 PM"
     booked = [
         f"{item.time} ({item.patientName})"
         for item in map(_to_item, await service.list_all())

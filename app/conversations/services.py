@@ -21,6 +21,7 @@ from app.appointments.services import (
 )
 from app.conversations.models import Conversation, Message
 from app.core.database import bind_tenant, resolve_whatsapp_tenant
+from app.core.time_format import format_time_12h
 from app.integrations.google.calendar import GoogleCalendarService
 from app.integrations.whatsapp.client import WhatsAppClient
 from app.llm_providers.base import ConversationMessage
@@ -196,7 +197,7 @@ class ConversationService:
         upcoming = await appointments.upcoming_for_customer(customer_phone)
         if upcoming:
             existing_appointment_info = "; ".join(
-                f"{a.service} el {a.starts_at.astimezone(BOGOTA):%Y-%m-%d a las %H:%M}"
+                f"{a.service} el {a.starts_at.astimezone(BOGOTA):%Y-%m-%d} a las {format_time_12h(a.starts_at)}"
                 for a in upcoming[:3]
             )
 
@@ -222,7 +223,7 @@ class ConversationService:
             f"{base_prompt}\n\n"
             "--- CONTEXTO EN TIEMPO REAL ---\n"
             f"Negocio: {org_name}\n"
-            f"Fecha y hora actual: {now_co.strftime('%Y-%m-%d %H:%M')} (hora Colombia)\n"
+            f"Fecha y hora actual: {now_co:%Y-%m-%d} {format_time_12h(now_co.replace(tzinfo=BOGOTA))} (hora Colombia)\n"
             f"Cliente con quien hablas: {effective_customer_name}\n"
             f"Teléfono del cliente: {customer_phone}\n"
             f"Catálogo de Servicios y Tarifas:\n{services_text}\n"
@@ -230,6 +231,7 @@ class ConversationService:
             f"Cita(s) agendada(s) del cliente en el calendario: {existing_appointment_info}\n"
             f"Disponibilidad general para agendar ({tomorrow}): {avail_info}\n\n"
             "DIRECTRICES DE RESPUESTA EN WHATSAPP:\n"
+            "FORMATO DE HORA: al escribirle al cliente usa siempre el formato de 12 horas (ej: 3:00 PM), nunca el de 24 horas. El formato HH:MM de 24 horas se usa solamente dentro de los comandos entre corchetes.\n"
             "1. COMUNICACIÓN NATURAL Y COMPLETA: Responde siempre con calidez, empatía y sentido completo. Si el cliente hace varias preguntas en un solo mensaje (ej: pregunta cuándo es su cita Y cuánto cuesta un servicio), responde AMBAS preguntas con claridad y amabilidad.\n"
             "2. LONGITUD: Mantén respuestas ágiles de WhatsApp (de 2 a 4 oraciones bien redactadas), evitando párrafos innecesariamente largos pero NUNCA cortando oraciones ni dejando ideas a medias.\n"
             "3. CONSULTAS DE CITAS EXISTENTES: Si el cliente pregunta cuándo es su cita o pide recordarle el horario, respóndele con la información de su cita registrada en el calendario SIN emitir ningún comando ni tag.\n"
