@@ -15,6 +15,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from typing import ClassVar
 
 import httpx
 import pytest
