@@ -68,6 +68,7 @@ class LLMResponse:
         model:        Specific model used (e.g. "claude-haiku-4-5").
         cached_tokens: Tokens served from provider cache (Anthropic-specific;
                        0 for other providers). Used to calculate actual cost.
+        truncated:    True when the token limit cut the reply short.
     """
 
     content: str
@@ -77,6 +78,8 @@ class LLMResponse:
     model: str
     cached_tokens: int = field(default=0)
     tool_calls: list[dict] | None = field(default=None)
+    # The model ran out of tokens, so `content` ends mid-sentence
+    truncated: bool = field(default=False)
 
     @property
     def total_tokens(self) -> int:

@@ -181,6 +181,7 @@ class OpenAIProvider(LLMProvider):
             model=self._model,
             cached_tokens=0,
             tool_calls=tool_calls,
+            truncated=choice.finish_reason == "length",
         )
 
     async def stream(

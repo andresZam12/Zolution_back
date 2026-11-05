@@ -37,6 +37,8 @@ LLM_CANDIDATES = [
     ("openai", "gpt-4o-mini"),
 ]
 LLM_TIMEOUT_SECONDS = 12.0
+# Gemini's thinking counts against this limit. Brevity comes from the prompt instructions.
+LLM_MAX_TOKENS = 2048
 AVAILABILITY_TIMEOUT_SECONDS = 2.0
 HISTORY_LENGTH = 12
 
@@ -196,10 +198,19 @@ async def _availability(
     return str(availability) if "no disponible" not in str(availability).lower() else default
 
 
+def _last_complete_sentences(text: str) -> str:
+    """Keep what a cut-off reply fully said. An unfinished command makes it unusable."""
+    if text.count("[[") != text.count("]]"):
+        return ""
+    last_end = max(text.rfind(mark) for mark in ".!?")
+    return text[: last_end + 1].strip() if last_end >= 0 else ""
+
+
 async def _ask_model(
     factory: LLMProviderFactory, system_prompt: str, history: list[ConversationMessage]
 ) -> tuple[str, str | None, list[str]]:
     errors = []
+    partial, partial_provider = "", None
     for provider_name, model in LLM_CANDIDATES:
         label = f"{provider_name}/{model}"
         try:
@@ -209,19 +220,23 @@ async def _ask_model(
                     system_prompt=system_prompt,
                     messages=history,
                     temperature=0.3,
-                    max_tokens=800,
+                    max_tokens=LLM_MAX_TOKENS,
                 ),
                 timeout=LLM_TIMEOUT_SECONDS,
             )
             content = (response.content or "").strip()
-            if content:
+            if content and not response.truncated:
                 return content, label, errors
-            errors.append(f"{label}: respuesta vacía")
+            if content and not partial:
+                partial, partial_provider = content, label
+            errors.append(f"{label}: {'respuesta cortada' if content else 'respuesta vacía'}")
         except Exception as exc:
             safe_message = re.sub(r"(sk-|AIza)[A-Za-z0-9_\-]+", "[clave]", str(exc))[:220]
             errors.append(f"{label}: {type(exc).__name__}: {safe_message}")
             logger.warning(f"LLM candidate {label} failed: {safe_message}")
-    return "", None, errors
+
+    usable = _last_complete_sentences(partial)
+    return usable, partial_provider if usable else None, errors
 
 
 def _complete_sentence(reply: str, booked_start: datetime | None) -> str:
@@ -232,7 +247,7 @@ def _complete_sentence(reply: str, booked_start: datetime | None) -> str:
         if re.search(r"\b(a las|a)$", reply, re.IGNORECASE):
             return re.sub(r"\b(a las|a)$", f"a las {booked_time}.", reply)
         return f"{reply} a las {booked_time}."
-    if reply and not reply.endswith((".", "!", "?")):
+    if reply and reply[-1].isalnum():
         return f"{reply}."
     return reply
 

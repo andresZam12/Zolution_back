@@ -42,6 +42,7 @@ from app.conversations.services import UNSUPPORTED_MESSAGE_REPLY, ConversationSe
 from app.core.database import bind_tenant
 from app.integrations import models as _integration_models  # noqa: F401
 from app.integrations.google.calendar import CalendarUnavailableError, GoogleCalendarService
+from app.llm_providers.google_provider import FinishReason, GoogleProvider
 from app.tenants.models import Organization
 from tests.conftest import requires_postgres
 
@@ -97,13 +98,17 @@ class FakeCalendar:
 
 class FakeLLM:
     reply = "Hola"
+    calls = 0
+    truncated_calls = 0
     histories: ClassVar[list[list[tuple[str, str]]]] = []
     prompts: ClassVar[list[str]] = []
 
     async def generate(self, system_prompt, messages, temperature, max_tokens):
         FakeLLM.prompts.append(system_prompt)
         FakeLLM.histories.append([(m.role, m.content) for m in messages])
-        return SimpleNamespace(content=FakeLLM.reply)
+        FakeLLM.calls += 1
+        truncated = FakeLLM.calls <= FakeLLM.truncated_calls
+        return SimpleNamespace(content=FakeLLM.reply, truncated=truncated)
 
 
 class FakeFactory:
@@ -122,6 +127,8 @@ class FakeWhatsApp:
 def fakes(monkeypatch):
     FakeCalendar.reset()
     FakeLLM.reply = "Hola"
+    FakeLLM.calls = 0
+    FakeLLM.truncated_calls = 0
     FakeLLM.histories = []
     FakeLLM.prompts = []
     FakeWhatsApp.sent = []
@@ -945,3 +952,88 @@ async def test_no_transaction_stays_open_while_the_model_answers(sessions, monke
         await ConversationService(session).process_incoming_message("111", CUSTOMER, "hola", "Ana")
 
     assert states == [False]
+
+
+# ---------------------------------------------------------------------------
+# Replies cut off by the model's token limit
+# ---------------------------------------------------------------------------
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_cut_off_reply_is_retried_with_the_next_model(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+    FakeLLM.truncated_calls = 1
+    FakeLLM.reply = "Sí, tenemos disponibilidad a las 3:30 PM. ¿Te gustaría que te la agende?"
+
+    await _incoming(sessions, "111", "¿hay cupo?")
+
+    assert FakeLLM.calls == 2
+    assert FakeWhatsApp.sent == [FakeLLM.reply]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_fragment_is_never_sent(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+    FakeLLM.truncated_calls = 2
+    FakeLLM.reply = (
+        "Sí, tenemos disponibilidad a las 3:30 PM. ¿Te gustaría que te la agende de una vez en ese"
+    )
+
+    await _incoming(sessions, "111", "¿hay cupo?")
+
+    assert FakeWhatsApp.sent == ["Sí, tenemos disponibilidad a las 3:30 PM."]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_reply_with_no_complete_sentence_is_not_sent(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    FakeLLM.truncated_calls = 2
+    FakeLLM.reply = "Sí, tenemos disponibilidad para hoy y por"
+
+    await _incoming(sessions, "111", "¿hay cupo?")
+
+    assert FakeWhatsApp.sent == [MODEL_UNAVAILABLE_REPLY]
+    assert (await _last_reply(sessions, organization_id)).resolved is False
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_command_cut_in_half_never_confirms_a_booking(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    FakeLLM.truncated_calls = 2
+    FakeLLM.reply = f"Listo, tu cita quedó agendada.\n[[AGENDAR|{NEXT_WEEK}|10:"
+
+    await _incoming(sessions, "111", "agéndame")
+
+    assert FakeWhatsApp.sent == [MODEL_UNAVAILABLE_REPLY]
+    assert await _appointments(sessions, organization_id) == []
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_complete_reply_keeps_emojis_at_the_end(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+    FakeLLM.reply = "¡Con mucho gusto, te esperamos! 😊"
+
+    await _incoming(sessions, "111", "gracias")
+
+    assert FakeWhatsApp.sent == ["¡Con mucho gusto, te esperamos! 😊"]
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (FinishReason.MAX_TOKENS, True),
+        (FinishReason.STOP, False),
+        (FinishReason.SAFETY, False),
+        (2, True),
+        (1, False),
+    ],
+)
+def test_gemini_token_limit_is_detected(reason, expected):
+    response = SimpleNamespace(candidates=[SimpleNamespace(finish_reason=reason)])
+
+    assert GoogleProvider._is_truncated(response) is expected

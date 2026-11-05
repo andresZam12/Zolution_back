@@ -223,6 +223,7 @@ async def test_availability_without_google_reports_the_agenda(sessions, api):
 async def test_simulator_uses_the_same_agenda(sessions, api, monkeypatch):
     class Reply:
         content = f"Listo, agendada.\n[[AGENDAR|{NEXT_WEEK}|10:00|Ana|Consulta]]"
+        truncated = False
 
     class Provider:
         async def generate(self, **kwargs):
@@ -401,6 +402,7 @@ async def test_simulator_and_whatsapp_share_the_same_instructions(sessions, api,
 
     class Reply:
         content = "Hola"
+        truncated = False
 
     class Factory:
         def get_provider(self, *args, **kwargs):

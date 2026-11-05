@@ -452,6 +452,7 @@ async def test_public_organization_registration_provisions_its_agent(sessions, a
 async def test_simulator_persists_inside_the_callers_tenant(sessions, api, monkeypatch):
     class Reply:
         content = "Hola desde el simulador"
+        truncated = False
 
     class Provider:
         async def generate(self, **kwargs):

@@ -28,6 +28,7 @@ from google.api_core.exceptions import (
     PermissionDenied,
     ResourceExhausted,
 )
+from google.generativeai.protos import Candidate
 
 from app.llm_providers.base import ConversationMessage, LLMProvider, LLMResponse
 from app.llm_providers.exceptions import (
@@ -42,7 +43,7 @@ from app.llm_providers.exceptions import (
 logger = logging.getLogger(__name__)
 
 GEMINI_FLASH_LATEST = "gemini-flash-latest"
-GEMINI_1_5_FLASH = "gemini-1.5-flash"
+FinishReason = Candidate.FinishReason
 
 
 def _normalize_model_name(model: str) -> str:
@@ -146,6 +147,15 @@ class GoogleProvider(LLMProvider):
         return clean_turns
 
     @staticmethod
+    def _is_truncated(response) -> bool:
+        """Gemini's thinking shares the token budget, so replies can stop mid-sentence."""
+        candidates = getattr(response, "candidates", None)
+        if not candidates:
+            return False
+        reason = candidates[0].finish_reason
+        return getattr(reason, "name", reason) in ("MAX_TOKENS", FinishReason.MAX_TOKENS)
+
+    @staticmethod
     def _map_exception(exc: Exception, provider: str) -> LLMProviderError:
         """Map Google API exceptions to domain exceptions."""
         if isinstance(exc, DeadlineExceeded | TimeoutError | asyncio.TimeoutError):
@@ -181,20 +191,7 @@ class GoogleProvider(LLMProvider):
                 timeout=12.0,
             )
         except Exception as exc:
-            # If primary model failed, retry with alternative model
-            alt_model = GEMINI_1_5_FLASH if "latest" in self._model_name else GEMINI_FLASH_LATEST
-            logger.info(
-                "Gemini %s issue (%s); falling back to %s", self._model_name, exc, alt_model
-            )
-            try:
-                fallback_model = self._get_model(system_prompt, temperature, max_tokens, alt_model)
-                response = await asyncio.wait_for(
-                    fallback_model.generate_content_async(google_msgs),
-                    timeout=12.0,
-                )
-            except Exception as fb_exc:
-                logger.warning("Gemini fallback %s also failed (%s)", alt_model, fb_exc)
-                raise self._map_exception(exc, self.PROVIDER_NAME) from exc
+            raise self._map_exception(exc, self.PROVIDER_NAME) from exc
 
         # Handle content extraction safely
         reply_text = ""
@@ -255,6 +252,7 @@ class GoogleProvider(LLMProvider):
             provider=self.PROVIDER_NAME,
             model=self._model_name,
             cached_tokens=0,
+            truncated=self._is_truncated(response),
         )
 
     async def stream(
