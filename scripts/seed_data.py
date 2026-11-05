@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.database import AsyncSessionFactory, Base, engine
 from app.tenants.models import Organization, User
 from app.agents.models import AgentConfig
@@ -187,6 +188,10 @@ DEMO_TENANTS = [
 
 async def seed():
     """Execute multi-industry database seeding."""
+    if get_settings().APP_ENV == "production":
+        logger.warning("Demo data is never seeded in production.")
+        return
+
     logger.info("Starting Zolution multi-industry database seeding...")
 
     async with AsyncSessionFactory() as session:

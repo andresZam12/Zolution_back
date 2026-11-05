@@ -179,9 +179,7 @@ async def receive_whatsapp_webhook(
             customer_phone = message.from_
             text_body = message.text.body
 
-            logger.info(
-                f"WhatsApp incoming text message from {customer_phone} ({customer_name}) on phone_id {phone_number_id}: '{text_body}'"
-            )
+            logger.info(f"WhatsApp text message {msg_id} received on phone_id {phone_number_id}")
 
             # Queue processing in the background so Meta gets 200 immediately
             background_tasks.add_task(
@@ -204,9 +202,7 @@ async def process_message_background_task(
     """
     Background task to process incoming WhatsApp message.
     """
-    logger.info(
-        f"Starting WhatsApp background worker for {customer_phone} (phone_id={phone_number_id})"
-    )
+    logger.info(f"Starting WhatsApp background worker for phone_id {phone_number_id}")
     try:
         from app.core.database import AsyncSessionFactory
 

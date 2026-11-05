@@ -7,7 +7,8 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.v1.endpoints import webhooks
 from app.core.config import Settings, get_settings
-from app.main import app
+from app.main import app, create_app
+from scripts import seed_data
 
 APP_SECRET = "test-app-secret"
 WEBHOOK_URL = "/api/v1/webhooks/whatsapp"
@@ -205,3 +206,36 @@ def test_production_accepts_explicit_secret_key():
     settings = Settings(_env_file=None, APP_ENV="production", SECRET_KEY="k" * 44)
 
     assert settings.APP_ENV == "production"
+
+
+@pytest.mark.parametrize(("environment", "status"), [("production", 404), ("development", 200)])
+async def test_api_schema_is_public_only_outside_production(monkeypatch, environment, status):
+    monkeypatch.setattr(get_settings(), "APP_ENV", environment)
+
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/openapi.json")
+
+    assert response.status_code == status
+
+
+async def test_message_content_and_phones_are_not_logged(whatsapp_settings, queued_messages, caplog):
+    body = _message_body("logged-1")
+
+    with caplog.at_level("INFO"):
+        async with _client() as client:
+            await client.post(WEBHOOK_URL, content=body, headers={"X-Hub-Signature-256": _sign(body)})
+
+    assert "Hello Zolution" not in caplog.text
+    assert "19876543210" not in caplog.text
+
+
+async def test_demo_data_is_never_seeded_in_production(monkeypatch):
+    monkeypatch.setattr(get_settings(), "APP_ENV", "production")
+
+    def must_not_open_a_session():
+        raise AssertionError("seed touched the database")
+
+    monkeypatch.setattr(seed_data, "AsyncSessionFactory", must_not_open_a_session)
+
+    await seed_data.seed()

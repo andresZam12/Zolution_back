@@ -86,9 +86,7 @@ class ConversationService:
         Main entrypoint for processing an incoming WhatsApp message.
         """
         clean_phone_id = str(phone_number_id).strip()
-        logger.info(
-            f"Processing incoming WhatsApp message from {customer_phone} (phone_id={clean_phone_id}): '{text_content}'"
-        )
+        logger.info(f"Processing incoming WhatsApp message (phone_id={clean_phone_id})")
 
         # 1. Route strictly by the receiving number. Unknown numbers are never assigned to a tenant.
         routed_organization_id = await resolve_whatsapp_tenant(self.db, clean_phone_id)
@@ -313,16 +311,16 @@ class ConversationService:
         await self.db.commit()
 
         # 9. Send via WhatsApp
-        logger.info(f"Sending WhatsApp reply to {customer_phone}: '{reply_text}'")
+        logger.info(f"Sending WhatsApp reply in conversation {conversation.id}")
         try:
             await self.whatsapp_client.send_text_message(
                 phone_number_id=clean_phone_id,
                 to=customer_phone,
                 text=reply_text,
             )
-            logger.info(f"WhatsApp reply successfully sent to {customer_phone}")
+            logger.info(f"WhatsApp reply sent in conversation {conversation.id}")
         except Exception as e:
-            logger.error(f"Failed to send WhatsApp message to {customer_phone}: {e}")
+            logger.error(f"Failed to send WhatsApp reply in conversation {conversation.id}: {e}")
 
     async def list_conversations(
         self, organization_id: str | uuid.UUID, page: int = 1, page_size: int = 20

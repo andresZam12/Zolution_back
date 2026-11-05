@@ -62,7 +62,7 @@ class WhatsAppClient:
             "text": {"preview_url": False, "body": text},
         }
 
-        logger.info(f"Sending WhatsApp text message to {clean_to} via phone_number_id {clean_phone_id}...")
+        logger.info(f"Sending WhatsApp text message via phone_number_id {clean_phone_id}")
         async with httpx.AsyncClient() as client:
             response = await client.post(url, headers=headers, json=payload, timeout=12.0)
 
