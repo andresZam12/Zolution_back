@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.agents.models import AgentConfig
 from app.api.v1.endpoints import conversations as conversations_endpoint
+from app.appointments.models import Appointment
 from app.conversations.models import Conversation, Message
 from app.core import database
 from app.core.database import bind_tenant, resolve_whatsapp_tenant
@@ -38,7 +39,7 @@ async def _empty_jwks() -> dict:
     return {"keys": []}
 
 
-TENANT_TABLES = ["agent_configs", "conversations", "messages", "integration_credentials"]
+TENANT_TABLES = ["agent_configs", "appointments", "conversations", "messages", "integration_credentials"]
 
 
 async def _add_tenant(sessions, name: str, phone_id: str | None = None) -> uuid.UUID:
@@ -123,7 +124,7 @@ async def test_rls_is_forced_for_the_application_role(sessions):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", [AgentConfig, Conversation, Message, IntegrationCredential])
+@pytest.mark.parametrize("model", [AgentConfig, Appointment, Conversation, Message, IntegrationCredential])
 async def test_session_without_tenant_sees_nothing(sessions, model):
     organization_id = await _add_tenant(sessions, "NegocioA", "111")
     await _add_conversation(sessions, organization_id, "573000000001")

@@ -2,9 +2,8 @@
 Google Calendar integration service with automatic OAuth2 refresh_token rotation.
 """
 
-from datetime import UTC, datetime, timedelta
-import re
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from sqlalchemy import select
@@ -14,25 +13,11 @@ from app.core.config import get_settings
 from app.core.database import bind_tenant
 from app.integrations.models import IntegrationCredential
 
-
-_PHONE_LINE = re.compile(r"^Teléfono / WhatsApp:\s*(.+)$", re.MULTILINE)
+CALENDAR_NOT_CONNECTED = "Calendario no conectado aún."
 
 
 class CalendarUnavailableError(Exception):
     """Google Calendar could not be reached or rejected the request."""
-
-
-def _digits(value: str) -> str:
-    return "".join(filter(str.isdigit, str(value)))
-
-
-def _event_belongs_to_phone(event: dict, phone_digits: str) -> bool:
-    """Match the phone stored on the event, tolerating a missing country prefix."""
-    match = _PHONE_LINE.search(event.get("description") or "")
-    if not match:
-        return False
-    stored = _digits(match.group(1))
-    return stored == phone_digits or (len(stored) >= 10 and phone_digits.endswith(stored))
 
 
 class GoogleCalendarService:
@@ -103,22 +88,27 @@ class GoogleCalendarService:
         try:
             token = await self._get_access_token()
         except Exception:
-            return "Calendario no conectado aún."
+            return CALENDAR_NOT_CONNECTED
 
         try:
             date_obj = datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
             return f"Invalid date format: {date_str}. Expected YYYY-MM-DD."
 
-        time_min = date_obj.isoformat() + "Z"
-        time_max = (date_obj + timedelta(days=1)).isoformat() + "Z"
+        time_min = f"{date_str}T00:00:00-05:00"
+        time_max = f"{(date_obj + timedelta(days=1)):%Y-%m-%d}T00:00:00-05:00"
 
         url = "https://www.googleapis.com/calendar/v3/freeBusy"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        data = {"timeMin": time_min, "timeMax": time_max, "items": [{"id": "primary"}]}
+        data = {
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "timeZone": "America/Bogota",
+            "items": [{"id": "primary"}],
+        }
 
         try:
             async with httpx.AsyncClient(timeout=4.0) as client:
@@ -225,39 +215,26 @@ class GoogleCalendarService:
             logger.warning("Error deleting event from Google Calendar: %s", exc)
             return {"success": False, "message": str(exc)}
 
-    async def find_customer_events(self, customer_phone: str) -> list[dict]:
+    async def busy_intervals(self, start_iso: str, end_iso: str) -> list[tuple[datetime, datetime]]:
         """
-        Return this customer's upcoming appointments, soonest first.
-
-        Only events created by Zolution qualify: they carry the customer's phone
-        on their own description line. Names are not used to match, so another
-        customer or a personal event of the business owner can never be returned.
+        Return the busy periods of the primary calendar within a time window.
 
         Raises:
             ValueError: Google Calendar is not connected.
             CalendarUnavailableError: Google did not answer successfully.
         """
-        digits = _digits(customer_phone)
-        if len(digits) < 7:
-            return []
-
         token = await self._get_access_token()
-        url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-        params = {
-            "timeMin": datetime.now(UTC).isoformat(),
-            "singleEvents": "true",
-            "orderBy": "startTime",
-            "maxResults": 250,
-        }
         async with httpx.AsyncClient(timeout=6.0) as client:
-            response = await client.get(
-                url, headers={"Authorization": f"Bearer {token}"}, params=params
+            response = await client.post(
+                "https://www.googleapis.com/calendar/v3/freeBusy",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"timeMin": start_iso, "timeMax": end_iso, "items": [{"id": "primary"}]},
             )
         if response.status_code != 200:
             raise CalendarUnavailableError(f"Google Calendar HTTP {response.status_code}")
 
+        busy = response.json().get("calendars", {}).get("primary", {}).get("busy", [])
         return [
-            event
-            for event in response.json().get("items", [])
-            if _event_belongs_to_phone(event, digits)
+            (datetime.fromisoformat(period["start"]), datetime.fromisoformat(period["end"]))
+            for period in busy
         ]

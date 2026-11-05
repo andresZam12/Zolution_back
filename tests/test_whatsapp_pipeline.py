@@ -2,11 +2,14 @@
 Regression tests for the WhatsApp pipeline.
 
 Tests that touch the database need TEST_DATABASE_URL (see conftest.py). They run
-on the real migrations, with RLS active. LLM, Calendar and WhatsApp are fakes.
+on the real migrations, with RLS and the overlap constraint active. LLM, Calendar
+and WhatsApp are fakes.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -18,15 +21,23 @@ from sqlalchemy import select
 
 from app.admin import models as _admin_models  # noqa: F401
 from app.agents.models import AgentConfig
-from app.conversations import services
-from app.conversations.models import Conversation, Message
-from app.conversations.services import (
+from app.appointments.models import Appointment
+from app.appointments.services import (
+    BOGOTA,
     CALENDAR_FAILED_REPLY,
     NEED_DATETIME_REPLY,
     NO_APPOINTMENT_REPLY,
-    ConversationService,
-    _parse_appointment_start,
+    SLOT_TAKEN_REPLY,
+    AppointmentService,
+    BookingOutcome,
+    parse_appointment_start,
+    parse_command,
+    phones_match,
+    strip_command_tags,
 )
+from app.conversations import services
+from app.conversations.models import Conversation, Message
+from app.conversations.services import ConversationService
 from app.core.database import bind_tenant
 from app.integrations import models as _integration_models  # noqa: F401
 from app.integrations.google.calendar import CalendarUnavailableError, GoogleCalendarService
@@ -35,30 +46,36 @@ from tests.conftest import requires_postgres
 
 CUSTOMER = "573000000001"
 NEXT_WEEK = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
-FUTURE_EVENT = f"{NEXT_WEEK}T09:00:00-05:00"
+OTHER_CUSTOMER = "573111111111"
+
+
+def _at(hour: int, minute: int = 0) -> datetime:
+    return datetime.fromisoformat(f"{NEXT_WEEK}T{hour:02d}:{minute:02d}:00-05:00")
 
 
 class FakeCalendar:
-    events: list[dict]
+    busy: list[tuple[datetime, datetime]]
     created: list[dict]
     deleted: list[str]
     calls: list[str]
-    lookup_error: Exception | None
-    create_result: dict
+    busy_error: Exception | None
+    create_result: dict | None
+    delete_result: dict
 
     def __init__(self, db, organization_id):
         pass
 
     @classmethod
     def reset(cls):
-        cls.events, cls.created, cls.deleted, cls.calls = [], [], [], []
-        cls.lookup_error = None
-        cls.create_result = {"success": True, "event_id": "new"}
+        cls.busy, cls.created, cls.deleted, cls.calls = [], [], [], []
+        cls.busy_error = None
+        cls.create_result = None
+        cls.delete_result = {"success": True}
 
-    async def find_customer_events(self, customer_phone):
-        if FakeCalendar.lookup_error:
-            raise FakeCalendar.lookup_error
-        return list(FakeCalendar.events)
+    async def busy_intervals(self, start_iso, end_iso):
+        if FakeCalendar.busy_error:
+            raise FakeCalendar.busy_error
+        return list(FakeCalendar.busy)
 
     async def get_availability(self, date_str):
         return "Disponible"
@@ -66,12 +83,15 @@ class FakeCalendar:
     async def create_appointment(self, **kwargs):
         FakeCalendar.calls.append("create")
         FakeCalendar.created.append(kwargs)
-        return FakeCalendar.create_result
+        return FakeCalendar.create_result or {
+            "success": True,
+            "event_id": f"event-{len(FakeCalendar.created)}",
+        }
 
     async def delete_appointment(self, event_id):
         FakeCalendar.calls.append("delete")
         FakeCalendar.deleted.append(event_id)
-        return {"success": True}
+        return FakeCalendar.delete_result
 
 
 class FakeLLM:
@@ -145,8 +165,36 @@ async def _agent_config(sessions, organization_id: uuid.UUID) -> AgentConfig:
         return (await db.execute(select(AgentConfig))).scalar_one()
 
 
-def _event(event_id: str = "old") -> dict:
-    return {"id": event_id, "start": {"dateTime": FUTURE_EVENT}}
+async def _book(
+    sessions,
+    organization_id: uuid.UUID,
+    phone: str,
+    hour: int,
+    event_id: str | None = None,
+    status: str = "confirmed",
+) -> None:
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        db.add(
+            Appointment(
+                organization_id=organization_id,
+                customer_name="Cliente",
+                customer_phone=phone,
+                service="Consulta",
+                starts_at=_at(hour),
+                ends_at=_at(hour + 1),
+                status=status,
+                source="dashboard",
+                google_event_id=event_id,
+            )
+        )
+        await db.commit()
+
+
+async def _appointments(sessions, organization_id: uuid.UUID) -> list[Appointment]:
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        return list((await db.execute(select(Appointment))).scalars().all())
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +274,7 @@ async def test_messages_of_a_previously_moved_thread_stay_hidden(sessions):
 
 
 # ---------------------------------------------------------------------------
-# Calendar commands
+# Booking through WhatsApp
 # ---------------------------------------------------------------------------
 
 
@@ -236,19 +284,19 @@ async def test_messages_of_a_previously_moved_thread_stay_hidden(sessions):
     "text", ["¿mi cita del 15 sigue en pie?", "cuánto cuesta la cita para 2 personas?"]
 )
 async def test_questions_never_book_without_a_command(sessions, text):
-    await _add_tenant(sessions, "Negocio", "111")
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
     FakeLLM.reply = "Claro, te cuento."
 
     await _incoming(sessions, "111", text)
 
-    assert FakeCalendar.created == []
+    assert await _appointments(sessions, organization_id) == []
     assert FakeWhatsApp.sent == ["Claro, te cuento."]
 
 
 @requires_postgres
 @pytest.mark.asyncio
-async def test_booking_is_confirmed_once_the_event_exists(sessions):
-    await _add_tenant(sessions, "Negocio", "111")
+async def test_booking_is_stored_and_mirrored_before_confirming(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
     FakeLLM.reply = f"Listo, quedó agendada.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
 
     await _incoming(sessions, "111", "agéndame")
@@ -256,6 +304,8 @@ async def test_booking_is_confirmed_once_the_event_exists(sessions):
     assert FakeCalendar.created[0]["start_time"] == f"{NEXT_WEEK}T10:00:00-05:00"
     assert FakeCalendar.created[0]["end_time"] == f"{NEXT_WEEK}T11:00:00-05:00"
     assert FakeWhatsApp.sent == ["Listo, quedó agendada."]
+    stored = await _appointments(sessions, organization_id)
+    assert [(a.source, a.status, a.google_event_id) for a in stored] == [("whatsapp", "confirmed", "event-1")]
 
 
 @requires_postgres
@@ -263,11 +313,12 @@ async def test_booking_is_confirmed_once_the_event_exists(sessions):
 @pytest.mark.parametrize(
     "setup",
     [
-        lambda: setattr(FakeCalendar, "lookup_error", ValueError("not connected")),
+        lambda: setattr(FakeCalendar, "busy_error", ValueError("not connected")),
+        lambda: setattr(FakeCalendar, "busy_error", CalendarUnavailableError("HTTP 500")),
         lambda: setattr(FakeCalendar, "create_result", {"success": False, "message": "HTTP 500"}),
     ],
 )
-async def test_failed_booking_is_never_confirmed(sessions, setup):
+async def test_failed_booking_is_never_confirmed_nor_kept(sessions, setup):
     organization_id = await _add_tenant(sessions, "Negocio", "111")
     setup()
     FakeLLM.reply = f"Listo, quedó agendada.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
@@ -275,6 +326,7 @@ async def test_failed_booking_is_never_confirmed(sessions, setup):
     await _incoming(sessions, "111", "agéndame")
 
     assert FakeWhatsApp.sent == [CALENDAR_FAILED_REPLY]
+    assert await _appointments(sessions, organization_id) == []
     async with sessions() as db:
         await bind_tenant(db, organization_id)
         stored = (await db.execute(select(Message).where(Message.role == "assistant"))).scalar_one()
@@ -298,22 +350,144 @@ async def test_booking_needs_a_valid_future_slot(sessions, tag):
 
 @requires_postgres
 @pytest.mark.asyncio
+@pytest.mark.parametrize("time_arg", ["10:00", "10:30", "09:30"])
+async def test_overlapping_another_customer_is_refused(sessions, time_arg):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, OTHER_CUSTOMER, 10)
+    FakeLLM.reply = f"Listo, quedó agendada.\n[[AGENDAR|{NEXT_WEEK}|{time_arg}]]"
+
+    await _incoming(sessions, "111", "agéndame")
+
+    assert FakeWhatsApp.sent == [SLOT_TAKEN_REPLY]
+    assert FakeCalendar.created == []
+    assert len(await _appointments(sessions, organization_id)) == 1
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_back_to_back_appointments_are_allowed(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, OTHER_CUSTOMER, 10)
+    FakeLLM.reply = f"Listo.\n[[AGENDAR|{NEXT_WEEK}|11:00]]"
+
+    await _incoming(sessions, "111", "agéndame")
+
+    assert FakeWhatsApp.sent == ["Listo."]
+    assert len(await _appointments(sessions, organization_id)) == 2
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_two_businesses_can_use_the_same_hour(sessions):
+    await _add_tenant(sessions, "NegocioA", "111")
+    org_b = await _add_tenant(sessions, "NegocioB", "222")
+    await _book(sessions, org_b, OTHER_CUSTOMER, 10)
+    FakeLLM.reply = f"Listo.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
+
+    await _incoming(sessions, "111", "agéndame")
+
+    assert FakeWhatsApp.sent == ["Listo."]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_owner_personal_events_block_the_slot(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    FakeCalendar.busy = [(_at(10), _at(12))]
+    FakeLLM.reply = f"Listo.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
+
+    await _incoming(sessions, "111", "agéndame")
+
+    assert FakeWhatsApp.sent == [SLOT_TAKEN_REPLY]
+    assert await _appointments(sessions, organization_id) == []
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_repeating_a_confirmed_slot_does_not_duplicate_it(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, CUSTOMER, 10)
+    FakeLLM.reply = f"Gracias a ti.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
+
+    await _incoming(sessions, "111", "gracias")
+
+    assert FakeWhatsApp.sent == ["Gracias a ti."]
+    assert FakeCalendar.created == []
+    assert len(await _appointments(sessions, organization_id)) == 1
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_simultaneous_requests_get_exactly_one_booking(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+
+    async def request(phone: str):
+        async with sessions() as db:
+            await bind_tenant(db, organization_id)
+            service = AppointmentService(db, organization_id, FakeCalendar(db, organization_id))
+            return (await service.book("Ana", phone, _at(10), _at(11), "Consulta", "whatsapp")).outcome
+
+    outcomes = await asyncio.gather(*(request(f"57300000000{i}") for i in range(5)))
+
+    assert sorted(outcomes) == sorted([BookingOutcome.BOOKED] + [BookingOutcome.SLOT_TAKEN] * 4)
+    assert len(await _appointments(sessions, organization_id)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Rescheduling and cancelling through WhatsApp
+# ---------------------------------------------------------------------------
+
+
+@requires_postgres
+@pytest.mark.asyncio
 async def test_reschedule_creates_the_new_slot_before_releasing_the_old_one(sessions):
-    await _add_tenant(sessions, "Negocio", "111")
-    FakeCalendar.events = [_event()]
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, CUSTOMER, 9, "old")
     FakeLLM.reply = f"Cambiada.\n[[REAGENDAR|{NEXT_WEEK}|15:00]]"
 
     await _incoming(sessions, "111", "cámbiala")
 
     assert FakeCalendar.calls == ["create", "delete"]
     assert FakeCalendar.deleted == ["old"]
+    stored = await _appointments(sessions, organization_id)
+    assert [(a.starts_at, a.google_event_id) for a in stored] == [(_at(15), "event-1")]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_reschedule_can_overlap_the_appointment_it_replaces(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, CUSTOMER, 10, "old")
+    FakeCalendar.busy = [(_at(10, 30), _at(11))]  # Google trims to the queried window
+    FakeLLM.reply = f"Cambiada.\n[[REAGENDAR|{NEXT_WEEK}|10:30]]"
+
+    await _incoming(sessions, "111", "muévela media hora")
+
+    assert FakeWhatsApp.sent == ["Cambiada."]
+    assert (await _appointments(sessions, organization_id))[0].starts_at == _at(10, 30)
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_reschedule_into_a_taken_slot_keeps_the_original(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, CUSTOMER, 9, "mine")
+    await _book(sessions, organization_id, OTHER_CUSTOMER, 15, "theirs")
+    FakeLLM.reply = f"Cambiada.\n[[REAGENDAR|{NEXT_WEEK}|15:00]]"
+
+    await _incoming(sessions, "111", "cámbiala")
+
+    assert FakeWhatsApp.sent == [SLOT_TAKEN_REPLY]
+    assert FakeCalendar.deleted == []
+    stored = await _appointments(sessions, organization_id)
+    assert sorted(a.starts_at for a in stored) == [_at(9), _at(15)]
 
 
 @requires_postgres
 @pytest.mark.asyncio
 async def test_failed_reschedule_keeps_the_original_appointment(sessions):
-    await _add_tenant(sessions, "Negocio", "111")
-    FakeCalendar.events = [_event()]
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, CUSTOMER, 9, "old")
     FakeCalendar.create_result = {"success": False, "message": "HTTP 500"}
     FakeLLM.reply = f"Cambiada.\n[[REAGENDAR|{NEXT_WEEK}|15:00]]"
 
@@ -321,6 +495,19 @@ async def test_failed_reschedule_keeps_the_original_appointment(sessions):
 
     assert FakeCalendar.deleted == []
     assert FakeWhatsApp.sent == [CALENDAR_FAILED_REPLY]
+    assert (await _appointments(sessions, organization_id))[0].starts_at == _at(9)
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_reschedule_without_an_appointment_says_so(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+    FakeLLM.reply = f"Cambiada.\n[[REAGENDAR|{NEXT_WEEK}|15:00]]"
+
+    await _incoming(sessions, "111", "cámbiala")
+
+    assert FakeCalendar.created == []
+    assert FakeWhatsApp.sent == [NO_APPOINTMENT_REPLY]
 
 
 @requires_postgres
@@ -337,15 +524,57 @@ async def test_cancel_without_an_appointment_says_so(sessions):
 
 @requires_postgres
 @pytest.mark.asyncio
-async def test_cancel_removes_the_soonest_appointment(sessions):
-    await _add_tenant(sessions, "Negocio", "111")
-    FakeCalendar.events = [_event("soonest"), _event("later")]
+async def test_cancel_removes_only_the_customers_soonest_appointment(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, OTHER_CUSTOMER, 8, "theirs")
+    await _book(sessions, organization_id, CUSTOMER, 10, "soonest")
+    await _book(sessions, organization_id, CUSTOMER, 15, "later")
     FakeLLM.reply = "Tu cita fue cancelada.\n[[CANCELAR]]"
 
     await _incoming(sessions, "111", "cancela mi cita")
 
     assert FakeCalendar.deleted == ["soonest"]
     assert FakeWhatsApp.sent == ["Tu cita fue cancelada."]
+    statuses = {a.google_event_id: a.status for a in await _appointments(sessions, organization_id)}
+    assert statuses == {"theirs": "confirmed", "soonest": "cancelled", "later": "confirmed"}
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_failed_cancel_keeps_the_appointment_and_says_so(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, CUSTOMER, 10, "event")
+    FakeCalendar.delete_result = {"success": False, "message": "HTTP 500"}
+    FakeLLM.reply = "Tu cita fue cancelada.\n[[CANCELAR]]"
+
+    await _incoming(sessions, "111", "cancela mi cita")
+
+    assert FakeWhatsApp.sent == [CALENDAR_FAILED_REPLY]
+    assert (await _appointments(sessions, organization_id))[0].status == "confirmed"
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_cancelled_slot_can_be_booked_again(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, OTHER_CUSTOMER, 10, status="cancelled")
+    FakeLLM.reply = f"Listo.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
+
+    await _incoming(sessions, "111", "agéndame")
+
+    assert FakeWhatsApp.sent == ["Listo."]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_panel_appointment_is_found_despite_phone_formatting(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    await _book(sessions, organization_id, "+57 300 000 0001", 10, "panel")
+    FakeLLM.reply = "Tu cita fue cancelada.\n[[CANCELAR]]"
+
+    await _incoming(sessions, "111", "cancela mi cita")
+
+    assert FakeCalendar.deleted == ["panel"]
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +587,7 @@ async def test_cancel_removes_the_soonest_appointment(sessions):
     [("14:30", (14, 30)), ("2:30 pm", (14, 30)), ("10am", (10, 0)), ("12 am", (0, 0)), ("12:15 p.m.", (12, 15))],
 )
 def test_parse_appointment_start_reads_times(time_arg, expected):
-    start = _parse_appointment_start("2026-11-20", time_arg, datetime(2026, 11, 4))
+    start = parse_appointment_start("2026-11-20", time_arg, datetime(2026, 11, 4))
 
     assert (start.hour, start.minute) == expected
 
@@ -368,7 +597,31 @@ def test_parse_appointment_start_reads_times(time_arg, expected):
     [("", ""), ("mañana", "10:00"), ("2026-13-40", "10:00"), ("2026-11-20", "24:00"), ("2026-11-03", "10:00")],
 )
 def test_parse_appointment_start_rejects_invalid_slots(date_arg, time_arg):
-    assert _parse_appointment_start(date_arg, time_arg, datetime(2026, 11, 4)) is None
+    assert parse_appointment_start(date_arg, time_arg, datetime(2026, 11, 4)) is None
+
+
+@pytest.mark.parametrize(
+    ("stored", "customer", "expected"),
+    [
+        ("573000000001", "573000000001", True),
+        ("+57 300 000 0001", "573000000001", True),
+        ("3000000001", "573000000001", True),
+        ("573111111111", "573000000001", False),
+        ("+57-sim-sim_abc", "+57-sim-sim_abc", True),
+        ("+57-sim-sim_abc", "+57-sim-sim_xyz", False),
+        ("0001", "573000000001", False),
+    ],
+)
+def test_phones_match(stored, customer, expected):
+    assert phones_match(stored, customer) is expected
+
+
+def test_commands_are_read_and_removed_from_replies():
+    reply = "Listo, te espero.\n[[AGENDAR|2026-11-20|10:00|Ana|Corte]]"
+
+    assert parse_command(reply) == ("AGENDAR", ["2026-11-20", "10:00", "Ana", "Corte"])
+    assert parse_command("Hola, ¿cómo estás?") == (None, [])
+    assert strip_command_tags(reply) == "Listo, te espero."
 
 
 def _google_calendar(monkeypatch, handler) -> GoogleCalendarService:
@@ -383,32 +636,40 @@ def _google_calendar(monkeypatch, handler) -> GoogleCalendarService:
 
 
 @pytest.mark.asyncio
-async def test_find_customer_events_matches_only_this_customers_upcoming_events(monkeypatch):
+async def test_busy_intervals_reads_the_requested_window(monkeypatch):
     seen: dict = {}
-    items = [
-        {"id": "personal", "summary": "Almuerzo con Ana", "description": "Llamar al 573000000001"},
-        {"id": "other", "description": "Cliente: Ana\nTeléfono / WhatsApp: 573111111111"},
-        {"id": "mine", "description": "Cliente: Ana\nTeléfono / WhatsApp: 573000000001"},
-        {"id": "manual", "description": "Cliente: Ana\nTeléfono / WhatsApp: +57 300 000 0001"},
-        {"id": "no-prefix", "description": "Cliente: Ana\nTeléfono / WhatsApp: 3000000001"},
-        {"id": "no-description"},
-    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen.update(request.url.params)
-        return httpx.Response(200, json={"items": items})
+        seen.update(json.loads(request.content))
+        busy = [{"start": "2026-11-20T15:00:00Z", "end": "2026-11-20T16:00:00Z"}]
+        return httpx.Response(200, json={"calendars": {"primary": {"busy": busy}}})
 
-    events = await _google_calendar(monkeypatch, handler).find_customer_events(CUSTOMER)
+    busy = await _google_calendar(monkeypatch, handler).busy_intervals(
+        "2026-11-20T10:00:00-05:00", "2026-11-20T11:00:00-05:00"
+    )
 
-    assert [e["id"] for e in events] == ["mine", "manual", "no-prefix"]
-    assert seen["timeMin"]
-    assert seen["orderBy"] == "startTime"
-    assert seen["singleEvents"] == "true"
+    assert seen["timeMin"] == "2026-11-20T10:00:00-05:00"
+    assert busy == [(datetime(2026, 11, 20, 10, tzinfo=BOGOTA), datetime(2026, 11, 20, 11, tzinfo=BOGOTA))]
 
 
 @pytest.mark.asyncio
-async def test_find_customer_events_reports_google_failures(monkeypatch):
+async def test_busy_intervals_reports_google_failures(monkeypatch):
     service = _google_calendar(monkeypatch, lambda request: httpx.Response(500))
 
     with pytest.raises(CalendarUnavailableError):
-        await service.find_customer_events(CUSTOMER)
+        await service.busy_intervals("2026-11-20T10:00:00-05:00", "2026-11-20T11:00:00-05:00")
+
+
+@pytest.mark.asyncio
+async def test_availability_covers_the_colombian_day(monkeypatch):
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"calendars": {"primary": {"busy": []}}})
+
+    await _google_calendar(monkeypatch, handler).get_availability("2026-12-31")
+
+    assert seen["timeMin"] == "2026-12-31T00:00:00-05:00"
+    assert seen["timeMax"] == "2027-01-01T00:00:00-05:00"
+    assert seen["timeZone"] == "America/Bogota"

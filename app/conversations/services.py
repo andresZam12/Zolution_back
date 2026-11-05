@@ -13,6 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents.models import AgentConfig
+from app.appointments.services import (
+    BOGOTA,
+    AppointmentService,
+    parse_command,
+    strip_command_tags,
+)
 from app.conversations.models import Conversation, Message
 from app.core.database import bind_tenant, resolve_whatsapp_tenant
 from app.integrations.google.calendar import GoogleCalendarService
@@ -22,53 +28,6 @@ from app.llm_providers.factory import LLMProviderFactory
 from app.tenants.models import Organization
 
 logger = logging.getLogger(__name__)
-
-CALENDAR_FAILED_REPLY = (
-    "Recibí tu solicitud, pero no pude actualizar la agenda en este momento, así que "
-    "este cambio aún no está confirmado. Por favor intenta de nuevo en unos minutos."
-)
-NEED_DATETIME_REPLY = (
-    "Para continuar necesito la fecha y la hora exactas de tu cita. ¿Me las confirmas?"
-)
-NO_APPOINTMENT_REPLY = (
-    "No encontré una cita próxima registrada con este número. ¿Deseas agendar una nueva?"
-)
-
-_TIME_PATTERN = re.compile(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?$", re.IGNORECASE)
-
-
-def _parse_appointment_start(date_arg: str, time_arg: str, now: datetime) -> datetime | None:
-    """Parse the date and time of a command; None unless they form a future slot."""
-    time_match = _TIME_PATTERN.match(time_arg.strip())
-    if not time_match:
-        return None
-
-    hour = int(time_match.group(1))
-    minute = int(time_match.group(2) or 0)
-    meridiem = (time_match.group(3) or "").lower().replace(".", "")
-    if meridiem == "pm" and hour < 12:
-        hour += 12
-    elif meridiem == "am" and hour == 12:
-        hour = 0
-
-    try:
-        day = datetime.strptime(date_arg.strip(), "%Y-%m-%d")
-        start = day.replace(hour=hour, minute=minute)
-    except ValueError:
-        return None
-    return start if start > now else None
-
-
-def _to_bogota_iso(moment: datetime) -> str:
-    return moment.strftime("%Y-%m-%dT%H:%M:00-05:00")
-
-
-def _event_starts_at(event: dict, start_iso: str) -> bool:
-    event_start = event.get("start", {}).get("dateTime")
-    if not event_start:
-        return False
-    return datetime.fromisoformat(event_start) == datetime.fromisoformat(start_iso)
-
 
 class ConversationService:
     """
@@ -232,20 +191,14 @@ class ConversationService:
         cal_service = GoogleCalendarService(self.db, organization_id)
         
         # Check if customer already has a scheduled appointment in Google Calendar
+        appointments = AppointmentService(self.db, agent_config.organization_id, cal_service)
         existing_appointment_info = "No hay citas previas agendadas registradas."
-        try:
-            evs = await cal_service.find_customer_events(customer_phone)
-            if evs:
-                active_evs = []
-                for ev in evs:
-                    st = ev.get("start", {}).get("dateTime") or ev.get("start", {}).get("date") or ""
-                    sm = ev.get("summary") or "Cita"
-                    if st:
-                        active_evs.append(f"{sm} el {st}")
-                if active_evs:
-                    existing_appointment_info = "; ".join(active_evs[:3])
-        except Exception as e_ev:
-            logger.info(f"Could not load customer existing appointments: {e_ev}")
+        upcoming = await appointments.upcoming_for_customer(customer_phone)
+        if upcoming:
+            existing_appointment_info = "; ".join(
+                f"{a.service} el {a.starts_at.astimezone(BOGOTA):%Y-%m-%d a las %H:%M}"
+                for a in upcoming[:3]
+            )
 
         lower_msg = text_content.lower()
         needs_calendar = any(
@@ -315,41 +268,24 @@ class ConversationService:
         if not reply_text:
             reply_text = f"¡Hola {effective_customer_name}! Gracias por comunicarte con {org_name}. ¿En qué podemos colaborarte hoy?"
 
-        # 7. Check for commands: CANCELAR, REAGENDAR, AGENDAR
-        cmd_match = re.search(r"\[\[\s*(AGENDAR|REAGENDAR|CANCELAR)\b([^\]]*)\]\]", reply_text, re.IGNORECASE)
-        command_type = None
-        cmd_args = []
-        if cmd_match:
-            command_type = cmd_match.group(1).upper()
-            raw_args = cmd_match.group(2).strip()
-            if raw_args.startswith(("|", ":")):
-                raw_args = raw_args[1:].strip()
-            cmd_args = [p.strip() for p in raw_args.split("|") if p.strip()]
-
-        calendar_reply, booked_start = await self._execute_calendar_command(
-            cal_service,
+        # 7. Run the model's command, if any, before telling the customer about it
+        command_type, cmd_args = parse_command(reply_text)
+        outcome = await appointments.execute_command(
             command_type,
             cmd_args,
             effective_customer_name,
             customer_phone,
             now_co,
+            "whatsapp",
         )
 
-        # Clean tags safely from reply_text:
-        # Strip ONLY the bracketed command tags, NEVER strip surrounding conversation text
-        reply_text = re.sub(r"\[\[\s*[A-Z_]+[^\]]*\]\]?", "", reply_text)
-        reply_text = re.sub(r"\[\[.*?\]\]?", "", reply_text)
-        # If there's an unclosed bracket tag at the very end of the string, remove only the tail
-        reply_text = re.sub(r"\[\[[A-Za-z0-9_|:\- ]*$", "", reply_text)
-        # Clean double spaces or excess blank lines
-        reply_text = re.sub(r"[ \t]{2,}", " ", reply_text)
-        reply_text = re.sub(r"\n{3,}", "\n\n", reply_text).strip()
+        reply_text = strip_command_tags(reply_text)
 
         # Fix truncated sentences ending in incomplete prepositions or punctuation
         reply_text = re.sub(r"[\s,;:-]+$", "", reply_text).strip()
         incomplete_pattern = r"\b(para mañana|mañana|a las|a|el día|para|las|el|en|confirmada para|quedó agendada para|quedó para)$"
-        if booked_start and re.search(incomplete_pattern, reply_text, re.IGNORECASE):
-            hh, mm = booked_start.hour, booked_start.minute
+        if outcome.booked_start and re.search(incomplete_pattern, reply_text, re.IGNORECASE):
+            hh, mm = outcome.booked_start.hour, outcome.booked_start.minute
             hh_12 = ((hh - 1) % 12) + 1
             ampm = "PM" if hh >= 12 else "AM"
             if re.search(r"\b(a las|a)$", reply_text, re.IGNORECASE):
@@ -360,8 +296,8 @@ class ConversationService:
             reply_text = reply_text + "."
 
         # The customer is only told about what actually happened on the calendar
-        if calendar_reply:
-            reply_text = calendar_reply
+        if outcome.reply_override:
+            reply_text = outcome.reply_override
 
         # 8. Save assistant response to DB
         assistant_message = Message(
@@ -385,77 +321,6 @@ class ConversationService:
             logger.info(f"WhatsApp reply successfully sent to {customer_phone}")
         except Exception as e:
             logger.error(f"Failed to send WhatsApp message to {customer_phone}: {e}")
-
-    async def _execute_calendar_command(
-        self,
-        cal_service: GoogleCalendarService,
-        command_type: str | None,
-        cmd_args: list[str],
-        customer_name: str,
-        customer_phone: str,
-        now: datetime,
-    ) -> tuple[str | None, datetime | None]:
-        """
-        Run a calendar command before anything is promised to the customer.
-
-        Returns (reply override, booked start). The override is None when the
-        model's reply is accurate, otherwise it replaces that reply.
-        """
-        if not command_type:
-            return None, None
-
-        start = None
-        if command_type in ("AGENDAR", "REAGENDAR"):
-            start = _parse_appointment_start(
-                cmd_args[0] if cmd_args else "",
-                cmd_args[1] if len(cmd_args) > 1 else "",
-                now,
-            )
-            if not start:
-                logger.info(f"Calendar command {command_type} without a valid date/time: {cmd_args}")
-                return NEED_DATETIME_REPLY, None
-
-        try:
-            events = await cal_service.find_customer_events(customer_phone)
-
-            if command_type == "CANCELAR":
-                if not events:
-                    return NO_APPOINTMENT_REPLY, None
-                result = await cal_service.delete_appointment(events[0]["id"])
-                if not result.get("success"):
-                    logger.error(f"Could not cancel event {events[0]['id']}: {result}")
-                    return CALENDAR_FAILED_REPLY, None
-                return None, None
-
-            if command_type == "REAGENDAR" and not events:
-                return NO_APPOINTMENT_REPLY, None
-
-            start_iso = _to_bogota_iso(start)
-            if any(_event_starts_at(ev, start_iso) for ev in events):
-                logger.info(f"Customer already has an event at {start_iso}; nothing to create")
-                return None, start
-
-            created = await cal_service.create_appointment(
-                customer_name=customer_name,
-                customer_phone=customer_phone,
-                start_time=start_iso,
-                end_time=_to_bogota_iso(start + timedelta(hours=1)),
-                notes=cmd_args[3] if len(cmd_args) > 3 else "Asesoría especializada",
-            )
-            if not created.get("success"):
-                logger.error(f"Could not create calendar event: {created.get('message')}")
-                return CALENDAR_FAILED_REPLY, None
-
-            # The previous slot is released only once the new one exists
-            if command_type == "REAGENDAR":
-                removed = await cal_service.delete_appointment(events[0]["id"])
-                if not removed.get("success"):
-                    logger.error(f"Rescheduled but old event remains {events[0]['id']}: {removed}")
-
-            return None, start
-        except Exception as exc:
-            logger.error(f"Calendar command {command_type} failed: {exc}")
-            return CALENDAR_FAILED_REPLY, None
 
     async def list_conversations(
         self, organization_id: str | uuid.UUID, page: int = 1, page_size: int = 20

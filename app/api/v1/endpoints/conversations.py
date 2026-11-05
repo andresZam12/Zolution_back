@@ -15,9 +15,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from sqlalchemy.orm.attributes import flag_modified
 
 from app.agents.models import AgentConfig
+from app.appointments.services import AppointmentService, parse_command, strip_command_tags
 from app.auth.dependencies import get_current_user
 from app.auth.models import UserContext
 from app.conversations.models import Conversation, Message
@@ -421,344 +421,42 @@ async def simulate_conversation_turn(
                 llm_errors.append(f"{pname}/{pmodel or 'default'}: {type(exc).__name__}: {msg}")
                 logger.warning("LLM provider %s/%s unavailable in simulator: %s", pname, pmodel, msg)
 
-        # 8. Parse commands: CANCELAR, REAGENDAR, AGENDAR
+        # 8. Run the model's command through the same path as WhatsApp
         if reply_text:
             if any(kw in lower_msg for kw in ("cita", "disponib", "horario", "espacio", "turno", "agendar")):
                 tool_called = f"check_availability(date='{tomorrow}')"
 
-            clean_reply_lower = reply_text.lower()
-            clean_user = lower_msg.strip()
-            combined_history_lower = " ".join([m.content for m in history_msgs]).lower()
-
-            # 8.A Cancellation Detection
-            cancel_match = re.search(r"\[\[CANCELAR(?:\|([^\]]+))?\]\]", reply_text, re.IGNORECASE)
-            is_natural_cancel = (
-                not cancel_match
-                and any(w in clean_user for w in ("cancelar", "cancela", "anular", "anula", "eliminar cita", "ya no puedo", "no voy a poder"))
-                and any(w in clean_reply_lower for w in ("cancelada", "he cancelado", "cita anulada", "quedó cancelada", "reserva cancelada", "liberé tu cupo"))
+            command_type, cmd_args = parse_command(reply_text)
+            outcome = await AppointmentService(
+                db, org_uuid, GoogleCalendarService(db, org_id_str)
+            ).execute_command(
+                command_type,
+                cmd_args,
+                customer_name,
+                customer_phone,
+                now_co,
+                "simulator",
+                require_calendar=False,
             )
+            google_calendar_synced = outcome.synced
+            reply_text = outcome.reply_override or strip_command_tags(reply_text)
 
-            if cancel_match or is_natural_cancel:
-                if cancel_match:
-                    reply_text = re.sub(r"\[\[CANCELAR[^\]]*\]\]", "", reply_text).strip()
+            if outcome.changed and command_type == "CANCELAR":
                 tool_called = "cancel_appointment()"
-                cal_service = GoogleCalendarService(db, org_id_str)
-                existing_apts = ans.get("appointments") if isinstance(ans.get("appointments"), list) else []
-                cancelled_any = False
-
-                for apt in existing_apts:
-                    if isinstance(apt, dict) and apt.get("status") == "confirmed":
-                        apt["status"] = "cancelled"
-                        g_id = apt.get("googleEventId")
-                        if g_id:
-                            try:
-                                await cal_service.delete_appointment(g_id)
-                                google_calendar_synced = True
-                            except Exception as c_err:
-                                logger.warning("Could not delete from Google Calendar: %s", c_err)
-                        cancelled_any = True
-                        break
-
-                # Also search on Google Calendar directly if not in memory
-                if not cancelled_any:
-                    try:
-                        evs = await cal_service.find_customer_events(customer_phone)
-                        for ev in evs:
-                            ev_id = ev.get("id")
-                            if ev_id:
-                                await cal_service.delete_appointment(ev_id)
-                                google_calendar_synced = True
-                                break
-                    except Exception:
-                        pass
-
-                if agent_cfg:
-                    ans["appointments"] = existing_apts
-                    agent_cfg.onboarding_answers = ans
-                    flag_modified(agent_cfg, "onboarding_answers")
-                    db.add(agent_cfg)
-
-            else:
-                # 8.B Booking or Rescheduling Detection
-                m_reagendar = re.search(r"\[\[REAGENDAR\|([^|\]]+)\|([^|\]]+)\|([^|\]]*)\|([^\]]*)\]\]", reply_text, re.IGNORECASE)
-                m_agendar = re.search(r"\[\[AGENDAR\|([^|\]]+)\|([^|\]]+)\|([^|\]]*)\|([^\]]*)\]\]", reply_text, re.IGNORECASE)
-                has_booking_match = bool(m_reagendar or m_agendar)
-                is_reschedule = bool(m_reagendar) or any(
-                    w in f"{clean_user} {clean_reply_lower}"
-                    for w in ("cambi", "reprogram", "otra hora", "en vez de", "mover", "modificar", "nueva fecha", "nuevo horario")
-                )
-
-                if m_reagendar:
-                    b_date, b_time, b_name, b_service = (g.strip() for g in m_reagendar.groups())
-                    reply_text = re.sub(r"\[\[REAGENDAR[^\]]*\]\]", "", reply_text).strip()
-                elif m_agendar:
-                    b_date, b_time, b_name, b_service = (g.strip() for g in m_agendar.groups())
-                    reply_text = re.sub(r"\[\[AGENDAR[^\]]*\]\]", "", reply_text).strip()
-                else:
-                    is_greeting = clean_user in (
-                        "hola", "buenas", "buen dia", "buenos dias", "buenas tardes", "buenas noches", "hey", "hola!", "hola buenas"
-                    )
-                    is_asking_question = "?" in reply_text or "¿" in reply_text or "indicar" in clean_reply_lower or "podrías" in clean_reply_lower or "falta" in clean_reply_lower
-                    is_natural_confirm = (
-                        not is_greeting
-                        and not is_asking_question
-                        and any(
-                            w in clean_reply_lower
-                            for w in (
-                                "quedó agendada", "ha quedado agendada", "registré tu cita", "tu cita ha sido agendada",
-                                "agendé formalmente tu cita", "cita programada con éxito", "he reservado tu cita",
-                                "queda reservada tu reunión", "quedó reservada tu reunión", "confirmadísimo", "reunión agendada",
-                                "he reprogramado", "reprogramada con éxito", "cambio confirmado", "cita modificada"
-                            )
-                        )
-                    )
-                    if is_natural_confirm:
-                        time_digits = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", f"{lower_msg} {clean_reply_lower} {combined_history_lower}", re.IGNORECASE)
-                        if time_digits:
-                            h_val = int(time_digits.group(1))
-                            m_val = int(time_digits.group(2) or 0)
-                            ampm_str = (time_digits.group(3) or "").upper()
-                            if ampm_str == "PM" and h_val < 12:
-                                h_val += 12
-                            elif ampm_str == "AM" and h_val == 12:
-                                h_val = 0
-                            b_time = f"{h_val:02d}:{m_val:02d}"
-                        else:
-                            b_time = "16:00"
-                        b_date = tomorrow
-                        b_name = customer_name
-                        b_service = f"Atención ({org_name})"
-                        has_booking_match = True
-
-                if has_booking_match:
-                    try:
-                        clean_time = b_time.upper().strip()
-                        is_pm = "PM" in clean_time
-                        time_digits = re.findall(r"\d+", clean_time)
-                        hh = int(time_digits[0]) if len(time_digits) > 0 else 10
-                        mm = int(time_digits[1]) if len(time_digits) > 1 else 0
-                        if is_pm and hh < 12:
-                            hh += 12
-                        elif not is_pm and "AM" in clean_time and hh == 12:
-                            hh = 0
-
-                        clean_date = tomorrow
-                        date_match = re.search(r"\d{4}-\d{2}-\d{2}", b_date)
-                        if date_match:
-                            clean_date = date_match.group(0)
-                        else:
-                            combined_text = f"{b_date} {lower_msg}".lower()
-                            if "pasado mañana" in combined_text:
-                                clean_date = (now_co + timedelta(days=2)).strftime("%Y-%m-%d")
-                            elif "mañana" in combined_text:
-                                clean_date = tomorrow
-                            elif "hoy" in combined_text:
-                                clean_date = now_co.strftime("%Y-%m-%d")
-                            elif "mierco" in combined_text:
-                                days_ahead = (2 - now_co.weekday()) % 7 or 7
-                                clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-                            elif "jueve" in combined_text:
-                                days_ahead = (3 - now_co.weekday()) % 7 or 7
-                                clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-                            elif "vierne" in combined_text:
-                                days_ahead = (4 - now_co.weekday()) % 7 or 7
-                                clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-                            elif "sabado" in combined_text or "sábado" in combined_text:
-                                days_ahead = (5 - now_co.weekday()) % 7 or 7
-                                clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-                            elif "lunes" in combined_text:
-                                days_ahead = (0 - now_co.weekday()) % 7 or 7
-                                clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-                            elif "martes" in combined_text:
-                                days_ahead = (1 - now_co.weekday()) % 7 or 7
-                                clean_date = (now_co + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-
-                        end_dt = datetime(2026, 1, 1, hh, mm) + timedelta(minutes=45)
-                        start_iso = f"{clean_date}T{hh:02d}:{mm:02d}:00-05:00"
-                        end_iso = f"{clean_date}T{end_dt.hour:02d}:{end_dt.minute:02d}:00-05:00"
-                        event_id = f"pg_sim_{uuid.uuid4().hex[:7]}"
-                        html_link = None
-                        cal_service = GoogleCalendarService(db, org_id_str)
-
-                        # CRITICAL: If customer already has a confirmed appointment or this is a reschedule,
-                        # delete the OLD event from Google Calendar so no duplicate remains!
-                        existing_apts = ans.get("appointments") if isinstance(ans.get("appointments"), list) else []
-                        found_old_to_delete = False
-                        for old_apt in existing_apts:
-                            if isinstance(old_apt, dict) and old_apt.get("status") == "confirmed":
-                                old_g_id = old_apt.get("googleEventId")
-                                if old_g_id:
-                                    try:
-                                        logger.info("Deleting old event from Google Calendar during reschedule: %s", old_g_id)
-                                        await cal_service.delete_appointment(old_g_id)
-                                    except Exception as del_exc:
-                                        logger.warning("Could not delete previous calendar event: %s", del_exc)
-                                old_apt["status"] = "rescheduled"
-                                found_old_to_delete = True
-                                is_reschedule = True
-                                break
-
-                        # Also search on Google Calendar directly if user asked for a change and not found in memory
-                        if is_reschedule and not found_old_to_delete:
-                            try:
-                                evs = await cal_service.find_customer_events(customer_phone)
-                                for ev in evs:
-                                    ev_id = ev.get("id")
-                                    if ev_id:
-                                        await cal_service.delete_appointment(ev_id)
-                                        break
-                            except Exception:
-                                pass
-
-                        try:
-                            cal_res = await asyncio.wait_for(
-                                cal_service.create_appointment(
-                                    customer_name=b_name or customer_name,
-                                    customer_phone=customer_phone,
-                                    start_time=start_iso,
-                                    end_time=end_iso,
-                                    notes=f"{b_service} - agendada por IA ({org_name})",
-                                ),
-                                timeout=6.0,
-                            )
-                            if isinstance(cal_res, dict) and cal_res.get("success"):
-                                event_id = cal_res.get("event_id") or event_id
-                                html_link = cal_res.get("html_link")
-                                google_calendar_synced = True
-                            else:
-                                cal_err = cal_res.get("message") if isinstance(cal_res, dict) else str(cal_res)
-                                logger.warning("Google Calendar creation unsuccessful: %s", cal_err)
-                                llm_errors.append(f"Google Calendar: {cal_err[:150]}")
-                        except Exception as exc:
-                            logger.warning("Calendar create failed in simulator: %s", exc)
-                            llm_errors.append(f"Google Calendar: {str(exc)[:150]}")
-
-                        if agent_cfg:
-                            existing_apts.insert(
-                                0,
-                                {
-                                    "id": f"apt-{uuid.uuid4().hex[:10]}",
-                                    "patientName": b_name or customer_name,
-                                    "phone": customer_phone,
-                                    "service": b_service or f"Cita por WhatsApp ({org_name})",
-                                    "date": clean_date,
-                                    "time": f"{hh:02d}:{mm:02d} (45 min)",
-                                    "status": "confirmed",
-                                    "googleEventId": event_id,
-                                    "htmlLink": html_link,
-                                    "createdAt": datetime.utcnow().isoformat() + "Z",
-                                },
-                            )
-                            ans["appointments"] = existing_apts
-                            agent_cfg.onboarding_answers = ans
-                            flag_modified(agent_cfg, "onboarding_answers")
-                            db.add(agent_cfg)
-
-                        appointment_created = True
-                        if is_reschedule:
-                            tool_called = f"reschedule_appointment(date='{clean_date}', time='{hh:02d}:{mm:02d}')"
-                        else:
-                            tool_called = f"book_appointment(date='{clean_date}', time='{hh:02d}:{mm:02d}')"
-                    except Exception as exc:
-                        logger.warning("Could not persist LLM booking: %s", exc)
-
-        # 9. Fallback rule-based engine if no LLM returned reply
-        if not reply_text:
-            lower = lower_msg
-
-            if any(
-                kw in lower
-                for kw in ("cita", "hora", "reunión", "agendar", "disponib", "espacio", "turno", "reservar")
-            ):
-                tool_called = f"check_availability(date='{tomorrow}')"
-                cal_service = GoogleCalendarService(db, org_id_str)
-                try:
-                    avail_info = await cal_service.get_availability(tomorrow)
-                    reply_text = (
-                        f"¡Claro! Soy {agent_name} de {org_name}. Acabo de consultar nuestra agenda en tiempo real "
-                        f"para mañana ({tomorrow}): {avail_info} ¿Prefieres agendar a las 10:00 AM o a las 3:30 PM?"
-                    )
-                except Exception:
-                    reply_text = (
-                        f"¡Con gusto! Soy {agent_name} de {org_name}. Consulté nuestra disponibilidad "
-                        f"({schedule_text}) y para mañana ({tomorrow}) tenemos cupos libres a las 10:00 AM y a las 3:30 PM. "
-                        f"¿Cuál horario te queda mejor para confirmar tu cita?"
-                    )
-            elif any(
-                kw in lower
-                for kw in ("10", "3:30", "3", "mañana", "jueves", "viernes", "confirm", "perfecto", "sí", "si ")
-            ):
-                slot_time = "10:00" if "10" in lower else "15:30"
-                slot_label = "10:00 AM" if "10" in lower else "3:30 PM"
-                start_iso = f"{tomorrow}T{slot_time}:00-05:00"
-                end_iso = f"{tomorrow}T{slot_time[:2]}:45:00-05:00"
-                tool_called = f"book_appointment(date='{tomorrow}', time='{slot_time}')"
-
-                event_id = f"pg_sim_{uuid.uuid4().hex[:7]}"
-                html_link = None
-                cal_service = GoogleCalendarService(db, org_id_str)
-                try:
-                    cal_res = await asyncio.wait_for(
-                        cal_service.create_appointment(
-                            customer_name=customer_name,
-                            customer_phone=customer_phone,
-                            start_time=start_iso,
-                            end_time=end_iso,
-                            notes=f"Cita agendada por IA ({org_name})",
-                        ),
-                        timeout=4.0,
-                    )
-                    if isinstance(cal_res, dict) and cal_res.get("success"):
-                        event_id = cal_res.get("event_id") or event_id
-                        html_link = cal_res.get("html_link")
-                except Exception:
-                    pass
-
-                if agent_cfg:
-                    existing_apts = ans.get("appointments")
-                    if not isinstance(existing_apts, list):
-                        existing_apts = []
-                    existing_apts.insert(
-                        0,
-                        {
-                            "id": f"apt-{uuid.uuid4().hex[:10]}",
-                            "patientName": customer_name,
-                            "phone": customer_phone,
-                            "service": f"Cita agendada por WhatsApp ({org_name})",
-                            "date": tomorrow,
-                            "time": f"{slot_label} (45 min)",
-                            "status": "confirmed",
-                            "googleEventId": event_id,
-                            "htmlLink": html_link,
-                            "createdAt": datetime.utcnow().isoformat() + "Z",
-                        },
-                    )
-                    ans["appointments"] = existing_apts
-                    agent_cfg.onboarding_answers = ans
-                    flag_modified(agent_cfg, "onboarding_answers")
-                    db.add(agent_cfg)
+            elif outcome.changed:
                 appointment_created = True
+                action = "reschedule" if command_type == "REAGENDAR" else "book"
+                tool_called = (
+                    f"{action}_appointment(date='{outcome.booked_start:%Y-%m-%d}', "
+                    f"time='{outcome.booked_start:%H:%M}')"
+                )
 
-                reply_text = (
-                    f"¡Excelente! He agendado formalmente tu cita en {org_name} para mañana ({tomorrow}) "
-                    f"a las {slot_label}. Quedó registrada en nuestro sistema (ID: {event_id}). "
-                    f"¿Puedo ayudarte con algo más?"
-                )
-            elif any(
-                kw in lower
-                for kw in ("costo", "precio", "tarifa", "servicio", "ofrecen", "catálogo", "catalogo", "info")
-            ):
-                reply_text = (
-                    f"En {org_name} ofrecemos:\n{services_text}\n\n"
-                    f"Nuestro horario de atención es: {schedule_text}. "
-                    f"¿Te gustaría que revisemos disponibilidad para agendar una cita?"
-                )
-            else:
-                reply_text = (
-                    f"¡Hola! Hablas con {agent_name}, asistente virtual de {org_name}. "
-                    f"Puedo brindarte información sobre nuestros servicios o consultar disponibilidad "
-                    f"para agendar tu cita. ¿En qué te puedo colaborar hoy?"
-                )
+        # 9. Without a model reply nothing can be understood, so nothing is booked
+        if not reply_text:
+            reply_text = (
+                f"¡Hola! Hablas con {agent_name}, asistente virtual de {org_name}. "
+                "En este momento no puedo procesar tu mensaje. Por favor intenta de nuevo en unos minutos."
+            )
 
         # 10. Persist assistant reply in PostgreSQL
         try:
