@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timedelta
 import logging
 import re
+import time
 import uuid
 
 from sqlalchemy import select
@@ -15,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from app.agents.models import AgentConfig
 from app.appointments.services import (
     BOGOTA,
+    CALENDAR_FAILED_REPLY,
     AppointmentService,
     parse_command,
     strip_command_tags,
@@ -85,6 +87,7 @@ class ConversationService:
         """
         Main entrypoint for processing an incoming WhatsApp message.
         """
+        started_at = time.monotonic()
         clean_phone_id = str(phone_number_id).strip()
         logger.info(f"Processing incoming WhatsApp message (phone_id={clean_phone_id})")
 
@@ -265,6 +268,7 @@ class ConversationService:
             except Exception as e:
                 logger.warning(f"LLM candidate {pname}/{pmodel} failed in WhatsApp processing: {e}", exc_info=True)
 
+        model_answered = bool(reply_text)
         if not reply_text:
             reply_text = f"¡Hola {effective_customer_name}! Gracias por comunicarte con {org_name}. ¿En qué podemos colaborarte hoy?"
 
@@ -312,15 +316,24 @@ class ConversationService:
 
         # 9. Send via WhatsApp
         logger.info(f"Sending WhatsApp reply in conversation {conversation.id}")
+        delivered = False
         try:
             await self.whatsapp_client.send_text_message(
                 phone_number_id=clean_phone_id,
                 to=customer_phone,
                 text=reply_text,
             )
+            delivered = True
             logger.info(f"WhatsApp reply sent in conversation {conversation.id}")
         except Exception as e:
             logger.error(f"Failed to send WhatsApp reply in conversation {conversation.id}: {e}")
+
+        # 10. Record the real outcome for the dashboard metrics
+        assistant_message.response_time_ms = int((time.monotonic() - started_at) * 1000)
+        assistant_message.resolved = (
+            model_answered and delivered and outcome.reply_override != CALENDAR_FAILED_REPLY
+        )
+        await self.db.commit()
 
     async def list_conversations(
         self, organization_id: str | uuid.UUID, page: int = 1, page_size: int = 20

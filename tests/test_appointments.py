@@ -15,6 +15,7 @@ from app.agents.models import AgentConfig
 from app.api.v1.endpoints import conversations as conversations_endpoint
 from app.appointments.models import Appointment
 from app.appointments.services import BOGOTA
+from app.conversations.models import Conversation, Message
 from app.core import database
 from app.core.database import bind_tenant
 from app.core.security import create_access_token
@@ -284,3 +285,72 @@ def test_times_are_shown_in_12_hour_format(hour, minute, expected):
 
 def test_times_are_shown_in_colombian_local_time():
     assert format_time_12h(datetime(2026, 11, 20, 20, 0, tzinfo=UTC)) == "3:00 PM"
+
+
+async def _add_reply(sessions, organization_id: uuid.UUID, resolved: bool | None, ms: int | None, days_ago: int = 0):
+    created_at = datetime.now(UTC) - timedelta(days=days_ago)
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        conversation_id = uuid.uuid4()
+        db.add(
+            Conversation(
+                id=conversation_id,
+                organization_id=organization_id,
+                customer_phone=str(uuid.uuid4().int)[:12],
+                status="active",
+            )
+        )
+        await db.flush()
+        db.add(
+            Message(
+                conversation_id=conversation_id,
+                organization_id=organization_id,
+                role="assistant",
+                content="Hola",
+                resolved=resolved,
+                response_time_ms=ms,
+                created_at=created_at,
+            )
+        )
+        await db.commit()
+
+
+ANALYTICS_URL = "/api/v1/analytics/overview"
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_metrics_stay_empty_until_there_is_real_data(sessions, api):
+    organization_id = await _add_tenant(sessions, "Negocio")
+
+    async with api as client:
+        response = await client.get(ANALYTICS_URL, headers=_headers(organization_id))
+
+    assert response.json() == {
+        "new_conversations_7d": 0,
+        "measured_replies": 0,
+        "resolution_rate": None,
+        "avg_response_seconds": None,
+    }
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_metrics_reflect_only_this_tenants_measured_replies(sessions, api):
+    organization_id = await _add_tenant(sessions, "NegocioA")
+    other = await _add_tenant(sessions, "NegocioB")
+    await _add_reply(sessions, organization_id, True, 2000)
+    await _add_reply(sessions, organization_id, True, 3000)
+    await _add_reply(sessions, organization_id, True, 1000)
+    await _add_reply(sessions, organization_id, False, 6000)
+    await _add_reply(sessions, organization_id, None, None)  # simulator or older reply
+    await _add_reply(sessions, organization_id, False, 90000, days_ago=45)  # outside the window
+    await _add_reply(sessions, other, False, 90000)
+
+    async with api as client:
+        response = await client.get(ANALYTICS_URL, headers=_headers(organization_id))
+
+    body = response.json()
+    assert body["measured_replies"] == 4
+    assert body["resolution_rate"] == 75.0
+    assert body["avg_response_seconds"] == 3.0

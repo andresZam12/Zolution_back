@@ -703,3 +703,76 @@ async def test_agent_is_told_to_use_12_hour_format(sessions):
 
     assert "a las 3:00 PM" in FakeLLM.prompts[-1]
     assert "formato de 12 horas" in FakeLLM.prompts[-1]
+
+
+# ---------------------------------------------------------------------------
+# Dashboard metrics
+# ---------------------------------------------------------------------------
+
+
+async def _last_reply(sessions, organization_id: uuid.UUID) -> Message:
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        return (await db.execute(select(Message).where(Message.role == "assistant"))).scalars().one()
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_delivered_reply_is_measured_as_resolved(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+
+    await _incoming(sessions, "111", "hola")
+
+    reply = await _last_reply(sessions, organization_id)
+    assert reply.resolved is True
+    assert reply.response_time_ms >= 0
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_refusing_an_occupied_slot_still_counts_as_resolved(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    FakeCalendar.busy = [(_at(10), _at(11))]
+    FakeLLM.reply = f"Listo.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
+
+    await _incoming(sessions, "111", "agéndame")
+
+    assert (await _last_reply(sessions, organization_id)).resolved is True
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_calendar_failure_counts_as_unresolved(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    FakeCalendar.busy_error = CalendarUnavailableError("HTTP 500")
+    FakeLLM.reply = f"Listo.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
+
+    await _incoming(sessions, "111", "agéndame")
+
+    assert (await _last_reply(sessions, organization_id)).resolved is False
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_model_failure_counts_as_unresolved(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+    FakeLLM.reply = ""
+
+    await _incoming(sessions, "111", "hola")
+
+    assert (await _last_reply(sessions, organization_id)).resolved is False
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_undelivered_reply_counts_as_unresolved(sessions, monkeypatch):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+
+    async def fail(self, phone_number_id, to, text):
+        raise RuntimeError("Meta rejected the message")
+
+    monkeypatch.setattr(FakeWhatsApp, "send_text_message", fail)
+
+    await _incoming(sessions, "111", "hola")
+
+    assert (await _last_reply(sessions, organization_id)).resolved is False
