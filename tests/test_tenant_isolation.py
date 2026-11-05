@@ -421,7 +421,7 @@ async def test_simulator_persists_inside_the_callers_tenant(sessions, api, monke
             headers=_token(organization_id),
         )
 
-    assert response.json()["reply"] == "Hola desde el simulador"
+    assert response.json()["reply"] == "Hola desde el simulador."
     async with sessions() as db:
         await bind_tenant(db, organization_id)
         messages = (await db.execute(select(Message))).scalars().all()

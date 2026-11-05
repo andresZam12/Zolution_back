@@ -20,6 +20,7 @@ alembic==1.14.0
 
 # --- Authentication (Auth0 JWT validation) ------------------------------------
 python-jose[cryptography]==3.3.0
+cryptography>=43            # Encrypts stored integration tokens
 httpx==0.28.1          # Async HTTP client for JWKS fetching
 
 # --- LLM Provider SDKs -------------------------------------------------------

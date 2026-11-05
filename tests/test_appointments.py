@@ -6,20 +6,23 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+import re
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.agents.models import AgentConfig
 from app.api.v1.endpoints import conversations as conversations_endpoint
 from app.appointments.models import Appointment
 from app.appointments.services import BOGOTA
+from app.conversations import services
 from app.conversations.models import Conversation, Message
-from app.core import database
+from app.core import crypto, database
 from app.core.database import bind_tenant
 from app.core.security import create_access_token
 from app.core.time_format import format_time_12h
+from app.integrations.models import IntegrationCredential
 from app.main import app
 from app.tenants.models import Organization
 from tests.conftest import requires_postgres
@@ -354,3 +357,93 @@ async def test_metrics_reflect_only_this_tenants_measured_replies(sessions, api)
     assert body["measured_replies"] == 4
     assert body["resolution_rate"] == 75.0
     assert body["avg_response_seconds"] == 3.0
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_simulator_and_whatsapp_share_the_same_instructions(sessions, api, monkeypatch):
+    prompts: list[str] = []
+
+    class Provider:
+        async def generate(self, system_prompt, messages, temperature, max_tokens):
+            prompts.append(system_prompt)
+            return Reply()
+
+    class Reply:
+        content = "Hola"
+
+    class Factory:
+        def get_provider(self, *args, **kwargs):
+            return Provider()
+
+    class Silent:
+        async def send_text_message(self, phone_number_id, to, text):
+            pass
+
+    monkeypatch.setattr(conversations_endpoint, "LLMProviderFactory", Factory)
+    monkeypatch.setattr(services, "LLMProviderFactory", Factory)
+    monkeypatch.setattr(services, "WhatsAppClient", Silent)
+    organization_id = await _add_tenant(sessions, "Negocio")
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        config = (await db.execute(select(AgentConfig))).scalar_one()
+        config.whatsapp_phone_number_id = "111"
+        await db.commit()
+
+    async with api as client:
+        await client.post(
+            "/api/v1/conversations/simulate",
+            json={"message": "hola", "customer_name": "Ana", "customer_phone": "573000000001"},
+            headers=_headers(organization_id),
+        )
+    async with sessions() as db:
+        await services.ConversationService(db).process_incoming_message(
+            "111", "573000000001", "hola", "Ana"
+        )
+
+    simulator, whatsapp = (re.sub(r"Fecha y hora actual: .*", "", prompt) for prompt in prompts)
+    assert simulator == whatsapp
+
+
+@pytest.mark.parametrize("token", ["ya29.token", "1//refresh", "ñandú-✓"])
+def test_tokens_are_not_readable_once_encrypted(token):
+    stored = crypto.encrypt_token(token)
+
+    assert token not in stored
+    assert crypto.decrypt_token(stored) == token
+    assert crypto.encrypt_token(token) != stored
+
+
+def test_tokens_stored_before_encryption_still_work():
+    assert crypto.decrypt_token("ya29.legacy") == "ya29.legacy"
+
+
+def test_unreadable_tokens_fail_safely():
+    assert crypto.decrypt_token("enc:v1:not-valid") == ""
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_google_tokens_are_encrypted_in_the_database(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio")
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        db.add(
+            IntegrationCredential(
+                organization_id=organization_id,
+                provider="google",
+                access_token="secret-access",
+                refresh_token="secret-refresh",
+            )
+        )
+        await db.commit()
+
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        credential = (await db.execute(select(IntegrationCredential))).scalar_one()
+        raw = (
+            await db.execute(text("SELECT access_token, refresh_token FROM integration_credentials"))
+        ).one()
+
+    assert (credential.access_token, credential.refresh_token) == ("secret-access", "secret-refresh")
+    assert all(value.startswith("enc:v1:") and "secret" not in value for value in raw)

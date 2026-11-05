@@ -122,24 +122,21 @@ class TestBuildSystemPrompt:
         prompt = _build_system_prompt(minimal_answers)
         assert "SÍ atendemos urgencias" in prompt
 
-    def test_contains_guardrail_fallback_phrase(self, minimal_answers):
-        """The exact fallback phrase must appear verbatim (from Section 6)."""
+    def test_contains_guardrail_rules(self, minimal_answers):
         prompt = _build_system_prompt(minimal_answers)
-        assert "Solo puedo ayudarte con citas en Clínica Dental Sonríe Bien." in prompt
+        assert "## 3. REGLAS DE ATENCIÓN Y GUARDRAILS" in prompt
 
     def test_contains_escalation_contact(self, minimal_answers):
         prompt = _build_system_prompt(minimal_answers)
         assert "Dr. García" in prompt
 
-    def test_six_sections_present(self, minimal_answers):
-        """All 6 sections defined in Section 6 of the project doc must be present."""
+    def test_all_sections_present(self, minimal_answers):
         prompt = _build_system_prompt(minimal_answers)
         assert "## 1. ROL Y ALCANCE" in prompt
         assert "## 2. DATOS DEL NEGOCIO" in prompt
-        assert "## 3. REGLAS DE GUARDRAIL" in prompt
-        assert "## 4. INFORMACIÓN SENSIBLE" in prompt
-        assert "## 5. FORMATO DE RESPUESTA" in prompt
-        assert "## 6. ESCALACIÓN" in prompt
+        assert "## 3. REGLAS DE ATENCIÓN Y GUARDRAILS" in prompt
+        assert "## 4. PROTOCOLO OBLIGATORIO DE AGENDAMIENTO" in prompt
+        assert "## 5. ESCALACIÓN HUMANA" in prompt
 
     def test_no_emoji_rule_when_disabled(self, minimal_answers):
         minimal_answers = minimal_answers.model_copy(update={"use_emojis": False})

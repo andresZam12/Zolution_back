@@ -37,7 +37,8 @@ from app.appointments.services import (
 )
 from app.conversations import services
 from app.conversations.models import Conversation, Message
-from app.conversations.services import ConversationService
+from app.conversations.agent import MODEL_UNAVAILABLE_REPLY, NO_CATALOG_TEXT
+from app.conversations.services import UNSUPPORTED_MESSAGE_REPLY, ConversationService
 from app.core.database import bind_tenant
 from app.integrations import models as _integration_models  # noqa: F401
 from app.integrations.google.calendar import CalendarUnavailableError, GoogleCalendarService
@@ -776,3 +777,124 @@ async def test_undelivered_reply_counts_as_unresolved(sessions, monkeypatch):
     await _incoming(sessions, "111", "hola")
 
     assert (await _last_reply(sessions, organization_id)).resolved is False
+
+
+# ---------------------------------------------------------------------------
+# Never leaving a customer without a correct answer
+# ---------------------------------------------------------------------------
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_redelivered_message_is_answered_once(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+
+    for _ in range(3):
+        async with sessions() as db:
+            await ConversationService(db).process_incoming_message(
+                "111", CUSTOMER, "hola", "Ana", whatsapp_message_id="wamid.same"
+            )
+
+    assert len(FakeWhatsApp.sent) == 1
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_simultaneous_redeliveries_are_answered_once(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+    await _incoming(sessions, "111", "primer mensaje")
+    FakeWhatsApp.sent.clear()
+
+    async def deliver():
+        async with sessions() as db:
+            await ConversationService(db).process_incoming_message(
+                "111", CUSTOMER, "hola", "Ana", whatsapp_message_id="wamid.race"
+            )
+
+    await asyncio.gather(*(deliver() for _ in range(4)))
+
+    assert len(FakeWhatsApp.sent) == 1
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_different_messages_are_all_answered(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+
+    for number in range(3):
+        async with sessions() as db:
+            await ConversationService(db).process_incoming_message(
+                "111", CUSTOMER, "hola", "Ana", whatsapp_message_id=f"wamid.{number}"
+            )
+
+    assert len(FakeWhatsApp.sent) == 3
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_audio_gets_a_clear_answer_without_calling_the_model(sessions):
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
+
+    async with sessions() as db:
+        await ConversationService(db).process_unsupported_message(
+            "111", CUSTOMER, "audio", "Ana", whatsapp_message_id="wamid.audio"
+        )
+
+    assert FakeWhatsApp.sent == [UNSUPPORTED_MESSAGE_REPLY]
+    assert FakeLLM.prompts == []
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        contents = (await db.execute(select(Message.content).order_by(Message.role.desc()))).scalars().all()
+    assert contents == ["[audio]", UNSUPPORTED_MESSAGE_REPLY]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_suspended_agent_ignores_audio_too(sessions):
+    await _add_tenant(sessions, "Paused", "111", status="suspended")
+
+    async with sessions() as db:
+        await ConversationService(db).process_unsupported_message("111", CUSTOMER, "audio", "Ana")
+
+    assert FakeWhatsApp.sent == []
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_model_outage_is_explained_instead_of_greeting(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+    FakeLLM.reply = ""
+
+    await _incoming(sessions, "111", "¿cuánto cuesta?")
+
+    assert FakeWhatsApp.sent == [MODEL_UNAVAILABLE_REPLY]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_business_without_catalog_gets_no_invented_services(sessions):
+    await _add_tenant(sessions, "Negocio", "111")
+
+    await _incoming(sessions, "111", "¿qué servicios tienen?")
+
+    assert NO_CATALOG_TEXT in FakeLLM.prompts[-1]
+    assert "diseño web" not in FakeLLM.prompts[-1]
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_no_transaction_stays_open_while_the_model_answers(sessions, monkeypatch):
+    await _add_tenant(sessions, "Negocio", "111")
+    states: list[bool] = []
+
+    class WatchedLLM(FakeLLM):
+        async def generate(self, system_prompt, messages, temperature, max_tokens):
+            states.append(session.in_transaction())
+            return await super().generate(system_prompt, messages, temperature, max_tokens)
+
+    monkeypatch.setattr(FakeFactory, "get_provider", lambda self, *args, **kwargs: WatchedLLM())
+
+    async with sessions() as session:
+        await ConversationService(session).process_incoming_message("111", CUSTOMER, "hola", "Ana")
+
+    assert states == [False]

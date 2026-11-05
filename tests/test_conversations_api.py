@@ -5,12 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.conversations.models import Conversation, Message
 from app.conversations.services import ConversationService
+from app.core.database import bind_tenant
+from app.tenants.models import Organization
 
 
 @pytest.mark.asyncio
 async def test_list_and_get_conversations(db_session: AsyncSession):
     """Test ConversationService list and get methods."""
     org_id = uuid.uuid4()
+    db_session.add(Organization(id=org_id, name="Negocio", slug="negocio", plan="starter", status="active"))
+    await db_session.flush()
+    await bind_tenant(db_session, org_id)
     service = ConversationService(db_session)
 
     # 1. Create 2 test conversations

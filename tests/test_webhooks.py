@@ -22,7 +22,7 @@ def _sign(body: bytes, secret: str = APP_SECRET) -> str:
     return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
-def _message_body(message_id: str) -> bytes:
+def _message_body(message_id: str, messages: list[dict] | None = None) -> bytes:
     return json.dumps(
         {
             "object": "whatsapp_business_account",
@@ -41,7 +41,8 @@ def _message_body(message_id: str) -> bytes:
                                 "contacts": [
                                     {"profile": {"name": "John Doe"}, "wa_id": "19876543210"}
                                 ],
-                                "messages": [
+                                "messages": messages
+                                or [
                                     {
                                         "from": "19876543210",
                                         "id": message_id,
@@ -75,7 +76,6 @@ def queued_messages(monkeypatch):
         calls.append(kwargs)
 
     monkeypatch.setattr(webhooks, "process_message_background_task", record)
-    webhooks._PROCESSED_MESSAGE_IDS.clear()
     return calls
 
 
@@ -137,6 +137,7 @@ async def test_signed_message_is_queued(whatsapp_settings, queued_messages):
             "customer_phone": "19876543210",
             "text_content": "Hello Zolution",
             "customer_name": "John Doe",
+            "whatsapp_message_id": "signed-1",
         }
     ]
 
@@ -239,3 +240,41 @@ async def test_demo_data_is_never_seeded_in_production(monkeypatch):
     monkeypatch.setattr(seed_data, "AsyncSessionFactory", must_not_open_a_session)
 
     await seed_data.seed()
+
+
+async def test_every_message_in_a_batch_is_processed(whatsapp_settings, queued_messages):
+    batch = [
+        {"from": "1", "id": f"batch-{i}", "timestamp": "1", "type": "text", "text": {"body": f"m{i}"}}
+        for i in range(3)
+    ]
+    body = _message_body("", batch)
+
+    async with _client() as client:
+        await client.post(WEBHOOK_URL, content=body, headers={"X-Hub-Signature-256": _sign(body)})
+
+    assert [call["text_content"] for call in queued_messages] == ["m0", "m1", "m2"]
+
+
+@pytest.mark.parametrize(
+    ("message_type", "expected"),
+    [("audio", 1), ("image", 1), ("location", 1), ("reaction", 0)],
+)
+async def test_unsupported_messages_get_a_reply_only_when_useful(
+    whatsapp_settings, queued_messages, monkeypatch, message_type, expected
+):
+    unsupported: list[dict] = []
+
+    async def record(**kwargs):
+        unsupported.append(kwargs)
+
+    monkeypatch.setattr(webhooks, "process_unsupported_background_task", record)
+    body = _message_body("", [{"from": "1", "id": "m", "timestamp": "1", "type": message_type}])
+
+    async with _client() as client:
+        response = await client.post(
+            WEBHOOK_URL, content=body, headers={"X-Hub-Signature-256": _sign(body)}
+        )
+
+    assert response.status_code == 200
+    assert len(unsupported) == expected
+    assert queued_messages == []

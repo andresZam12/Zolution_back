@@ -76,6 +76,10 @@ class Message(Base):
         nullable=False,
         index=True,
     )
+    # Meta's id for inbound messages: a redelivered message is rejected by this unique value
+    whatsapp_message_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # 'user' or 'assistant'
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)

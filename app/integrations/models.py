@@ -9,6 +9,7 @@ from sqlalchemy import DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.crypto import EncryptedText
 from app.core.database import Base
 
 
@@ -16,8 +17,7 @@ class IntegrationCredential(Base):
     """
     OAuth2 credentials for third-party integrations (e.g., Google Workspace).
 
-    Stores access tokens and refresh tokens securely per tenant.
-    Tokens should ideally be encrypted at rest, but for MVP we store them as plain text.
+    Access and refresh tokens are encrypted at rest (see app.core.crypto).
     """
 
     __tablename__ = "integration_credentials"
@@ -34,8 +34,8 @@ class IntegrationCredential(Base):
         index=True,
     )
     provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # e.g., 'google'
-    access_token: Mapped[str] = mapped_column(Text, nullable=False)
-    refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token: Mapped[str] = mapped_column(EncryptedText, nullable=False)
+    refresh_token: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     scopes: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )  # Comma-separated or space-separated

@@ -2,35 +2,30 @@
 Conversation service layer.
 """
 
-import asyncio
-from datetime import datetime, timedelta
 import logging
-import re
 import time
 import uuid
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents.models import AgentConfig
-from app.appointments.services import (
-    BOGOTA,
-    CALENDAR_FAILED_REPLY,
-    AppointmentService,
-    parse_command,
-    strip_command_tags,
-)
+from app.appointments.services import CALENDAR_FAILED_REPLY
+from app.conversations.agent import run_agent_turn
 from app.conversations.models import Conversation, Message
 from app.core.database import bind_tenant, resolve_whatsapp_tenant
-from app.core.time_format import format_time_12h
 from app.integrations.google.calendar import GoogleCalendarService
 from app.integrations.whatsapp.client import WhatsAppClient
-from app.llm_providers.base import ConversationMessage
 from app.llm_providers.factory import LLMProviderFactory
 from app.tenants.models import Organization
 
 logger = logging.getLogger(__name__)
+
+UNSUPPORTED_MESSAGE_REPLY = (
+    "Por ahora solo puedo leer mensajes de texto. ¿Me escribes lo que necesitas, por favor?"
+)
 
 class ConversationService:
     """
@@ -77,263 +72,159 @@ class ConversationService:
 
         return conversation
 
+    async def _active_agent(self, phone_number_id: str) -> tuple[AgentConfig, Organization] | None:
+        """Route strictly by the receiving number. Unknown numbers are never assigned to a tenant."""
+        organization_id = await resolve_whatsapp_tenant(self.db, phone_number_id)
+        if not organization_id:
+            logger.warning(f"No AgentConfig linked to WhatsApp phone_number_id: {phone_number_id}")
+            return None
+
+        await bind_tenant(self.db, organization_id)
+        agent_res = await self.db.execute(
+            select(AgentConfig).where(AgentConfig.organization_id == organization_id)
+        )
+        agent_config = agent_res.scalar_one()
+        org_res = await self.db.execute(
+            select(Organization).where(Organization.id == organization_id)
+        )
+        org = org_res.scalar_one_or_none()
+
+        if agent_config.status != "active" or not org or org.status != "active":
+            logger.info(f"Ignored WhatsApp message for inactive agent {agent_config.id}")
+            return None
+        return agent_config, org
+
+    async def _save_incoming(
+        self,
+        conversation: Conversation,
+        text_content: str,
+        whatsapp_message_id: str | None,
+    ) -> bool:
+        """Store the customer's message. Returns False if Meta already delivered it."""
+        self.db.add(
+            Message(
+                id=uuid.uuid4(),
+                conversation_id=conversation.id,
+                organization_id=conversation.organization_id,
+                whatsapp_message_id=whatsapp_message_id,
+                role="user",
+                content=text_content,
+            )
+        )
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            logger.info(f"Ignored duplicate WhatsApp message: {whatsapp_message_id}")
+            return False
+        return True
+
+    async def _deliver(self, phone_number_id: str, customer_phone: str, reply: str, conversation_id) -> bool:
+        logger.info(f"Sending WhatsApp reply in conversation {conversation_id}")
+        try:
+            await self.whatsapp_client.send_text_message(
+                phone_number_id=phone_number_id,
+                to=customer_phone,
+                text=reply,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send WhatsApp reply in conversation {conversation_id}: {e}")
+            return False
+        logger.info(f"WhatsApp reply sent in conversation {conversation_id}")
+        return True
+
     async def process_incoming_message(
         self,
         phone_number_id: str,
         customer_phone: str,
         text_content: str,
         customer_name: str | None,
+        whatsapp_message_id: str | None = None,
     ) -> None:
-        """
-        Main entrypoint for processing an incoming WhatsApp message.
-        """
+        """Answer a customer's WhatsApp text message."""
         started_at = time.monotonic()
         clean_phone_id = str(phone_number_id).strip()
         logger.info(f"Processing incoming WhatsApp message (phone_id={clean_phone_id})")
 
-        # 1. Route strictly by the receiving number. Unknown numbers are never assigned to a tenant.
-        routed_organization_id = await resolve_whatsapp_tenant(self.db, clean_phone_id)
-        if not routed_organization_id:
-            logger.warning(f"No AgentConfig linked to WhatsApp phone_number_id: {clean_phone_id}")
+        routed = await self._active_agent(clean_phone_id)
+        if not routed:
             return
+        agent_config, org = routed
 
-        await bind_tenant(self.db, routed_organization_id)
-        agent_res = await self.db.execute(
-            select(AgentConfig).where(AgentConfig.organization_id == routed_organization_id)
-        )
-        agent_config = agent_res.scalar_one()
-
-        org_res = await self.db.execute(
-            select(Organization).where(Organization.id == agent_config.organization_id)
-        )
-        org = org_res.scalar_one_or_none()
-
-        if agent_config.status != "active" or not org or org.status != "active":
-            logger.info(f"Ignored WhatsApp message for inactive agent {agent_config.id}")
-            return
-
-        organization_id = str(agent_config.organization_id)
-
-        org_name = org.name or "tu negocio"
-
-        # 2. Get or create conversation history
         effective_customer_name = (customer_name or "Cliente").strip()
         conversation = await self._get_or_create_conversation(
-            organization_id, customer_phone, effective_customer_name
+            agent_config.organization_id, customer_phone, effective_customer_name
         )
+        if not await self._save_incoming(conversation, text_content, whatsapp_message_id):
+            return
 
-        # 3. Append incoming user message
-        user_message = Message(
-            id=uuid.uuid4(),
+        turn = await run_agent_turn(
+            self.db,
+            agent_config=agent_config,
+            org_name=org.name or "tu negocio",
             conversation_id=conversation.id,
-            organization_id=organization_id,
-            role="user",
-            content=text_content,
-        )
-        self.db.add(user_message)
-        await self.db.commit()
-
-        # 4. Prepare message history for LLM in natural chronological order (clean up trailing broken syntax)
-        stmt_history = (
-            select(Message)
-            .where(
-                Message.conversation_id == conversation.id,
-                Message.organization_id == agent_config.organization_id,
-            )
-            .order_by(Message.created_at.asc())
-        )
-        hist_res = await self.db.execute(stmt_history)
-        all_msgs = list(hist_res.scalars().all())
-        recent_msgs = all_msgs[-12:]
-
-        history_msgs = []
-        for m in recent_msgs:
-            c = (m.content or "").strip()
-            if not c:
-                continue
-            if m.role in ("assistant", "model"):
-                c = re.sub(r"\[\[.*?\]\]", "", c).strip()
-                c = re.sub(r"[\s,;:-]+$", "", c).strip()
-                if not c.endswith((".", "!", "?")):
-                    c += "."
-            history_msgs.append(ConversationMessage(role=m.role, content=c))
-
-        # 5. Build system prompt
-        ans = dict((agent_config.onboarding_answers or {}) or {})
-        agent_name = ans.get("agentName") or ans.get("agent_name") or "Asistente"
-        
-        # Build catalog of services and pricing from onboarding answers
-        raw_services = ans.get("services")
-        services_lines = []
-        if isinstance(raw_services, list):
-            for s in raw_services:
-                if isinstance(s, dict):
-                    sn = s.get("name") or s.get("service") or ""
-                    sp = s.get("price_cop") or s.get("price") or ""
-                    sd = s.get("duration_minutes") or s.get("duration") or ""
-                    l = f"- {sn}"
-                    if sp:
-                        l += f": ${sp:,} COP" if isinstance(sp, (int, float)) else f": {sp}"
-                    if sd:
-                        l += f" ({sd} min)"
-                    services_lines.append(l)
-                elif isinstance(s, str) and s.strip():
-                    services_lines.append(f"- {s.strip()}")
-        elif isinstance(raw_services, str) and raw_services.strip():
-            services_lines.append(raw_services.strip())
-        services_text = "\n".join(services_lines) if services_lines else "- Asesoría y diseño web / desarrollo de software"
-
-        schedule_text = ans.get("schedule") or ans.get("hours") or "Lunes a Viernes 8:00 AM - 6:00 PM"
-
-        now_co = datetime.utcnow() - timedelta(hours=5)
-        tomorrow = (now_co + timedelta(days=1)).strftime("%Y-%m-%d")
-        default_avail = f"Atendemos {schedule_text}. Horarios recomendados: 10:00 AM y 3:30 PM."
-        avail_info = default_avail
-
-        cal_service = GoogleCalendarService(self.db, organization_id)
-        
-        # Check if customer already has a scheduled appointment in Google Calendar
-        appointments = AppointmentService(self.db, agent_config.organization_id, cal_service)
-        existing_appointment_info = "No hay citas previas agendadas registradas."
-        upcoming = await appointments.upcoming_for_customer(customer_phone)
-        if upcoming:
-            existing_appointment_info = "; ".join(
-                f"{a.service} el {a.starts_at.astimezone(BOGOTA):%Y-%m-%d} a las {format_time_12h(a.starts_at)}"
-                for a in upcoming[:3]
-            )
-
-        lower_msg = text_content.lower()
-        needs_calendar = any(
-            kw in lower_msg
-            for kw in ("cita", "hora", "agendar", "disponib", "espacio", "turno", "reservar", "mañana", "calendario", "cupo")
-        )
-        if needs_calendar:
-            try:
-                avail_res = await asyncio.wait_for(
-                    cal_service.get_availability(tomorrow),
-                    timeout=2.0,
-                )
-                res_str = str(avail_res)
-                if res_str and "no disponible" not in res_str.lower() and "failed" not in res_str.lower():
-                    avail_info = res_str
-            except Exception as e:
-                logger.info(f"Calendar availability check skipped/failed: {e}")
-
-        base_prompt = agent_config.system_prompt_generated or f"Eres {agent_name}, asistente virtual de {org_name}."
-        system_prompt = (
-            f"{base_prompt}\n\n"
-            "--- CONTEXTO EN TIEMPO REAL ---\n"
-            f"Negocio: {org_name}\n"
-            f"Fecha y hora actual: {now_co:%Y-%m-%d} {format_time_12h(now_co.replace(tzinfo=BOGOTA))} (hora Colombia)\n"
-            f"Cliente con quien hablas: {effective_customer_name}\n"
-            f"Teléfono del cliente: {customer_phone}\n"
-            f"Catálogo de Servicios y Tarifas:\n{services_text}\n"
-            f"Horario de atención: {schedule_text}\n"
-            f"Cita(s) agendada(s) del cliente en el calendario: {existing_appointment_info}\n"
-            f"Disponibilidad general para agendar ({tomorrow}): {avail_info}\n\n"
-            "DIRECTRICES DE RESPUESTA EN WHATSAPP:\n"
-            "FORMATO DE HORA: al escribirle al cliente usa siempre el formato de 12 horas (ej: 3:00 PM), nunca el de 24 horas. El formato HH:MM de 24 horas se usa solamente dentro de los comandos entre corchetes.\n"
-            "1. COMUNICACIÓN NATURAL Y COMPLETA: Responde siempre con calidez, empatía y sentido completo. Si el cliente hace varias preguntas en un solo mensaje (ej: pregunta cuándo es su cita Y cuánto cuesta un servicio), responde AMBAS preguntas con claridad y amabilidad.\n"
-            "2. LONGITUD: Mantén respuestas ágiles de WhatsApp (de 2 a 4 oraciones bien redactadas), evitando párrafos innecesariamente largos pero NUNCA cortando oraciones ni dejando ideas a medias.\n"
-            "3. CONSULTAS DE CITAS EXISTENTES: Si el cliente pregunta cuándo es su cita o pide recordarle el horario, respóndele con la información de su cita registrada en el calendario SIN emitir ningún comando ni tag.\n"
-            "4. COMANDOS DE ACCIÓN (SOLO cuando el cliente solicita o confirma una fecha/hora nueva):\n"
-            "   - Agendar nueva cita: Confirma la fecha y hora en el texto y al final pon en renglón nuevo: [[AGENDAR|YYYY-MM-DD|HH:MM]] usando la fecha real que pidió el cliente\n"
-            "   - Reagendar / cambiar hora: Confirma el nuevo horario en el texto y al final pon en renglón nuevo: [[REAGENDAR|YYYY-MM-DD|HH:MM]]\n"
-            "   - Cancelar: Confirma la cancelación en el texto y al final pon en renglón nuevo: [[CANCELAR]]\n"
-            "   - Preguntas generales, consultas de precios o agradecimientos: Responde cordialmente SIN agregar ningún comando ni corchetes.\n"
+            customer_name=effective_customer_name,
+            customer_phone=customer_phone,
+            text_content=text_content,
+            source="whatsapp",
+            calendar=GoogleCalendarService(self.db, str(agent_config.organization_id)),
+            llm_factory=self.llm_factory,
+            require_calendar=True,
         )
 
-        # 6. Call LLM with resilient candidates
-        candidates = [
-            ("google", "gemini-flash-latest"),
-            ("google", "gemini-1.5-flash"),
-            ("openai", "gpt-4o-mini"),
-        ]
-        reply_text = ""
-        for pname, pmodel in candidates:
-            try:
-                provider = self.llm_factory.get_provider(pname, pmodel, system_prompt)
-                resp = await asyncio.wait_for(
-                    provider.generate(
-                        system_prompt=system_prompt,
-                        messages=history_msgs,
-                        temperature=0.3,
-                        max_tokens=800,
-                    ),
-                    timeout=12.0,
-                )
-                if resp.content and resp.content.strip():
-                    reply_text = resp.content.strip()
-                    break
-            except Exception as e:
-                logger.warning(f"LLM candidate {pname}/{pmodel} failed in WhatsApp processing: {e}", exc_info=True)
-
-        model_answered = bool(reply_text)
-        if not reply_text:
-            reply_text = f"¡Hola {effective_customer_name}! Gracias por comunicarte con {org_name}. ¿En qué podemos colaborarte hoy?"
-
-        # 7. Run the model's command, if any, before telling the customer about it
-        command_type, cmd_args = parse_command(reply_text)
-        outcome = await appointments.execute_command(
-            command_type,
-            cmd_args,
-            effective_customer_name,
-            customer_phone,
-            now_co,
-            "whatsapp",
-        )
-
-        reply_text = strip_command_tags(reply_text)
-
-        # Fix truncated sentences ending in incomplete prepositions or punctuation
-        reply_text = re.sub(r"[\s,;:-]+$", "", reply_text).strip()
-        incomplete_pattern = r"\b(para mañana|mañana|a las|a|el día|para|las|el|en|confirmada para|quedó agendada para|quedó para)$"
-        if outcome.booked_start and re.search(incomplete_pattern, reply_text, re.IGNORECASE):
-            hh, mm = outcome.booked_start.hour, outcome.booked_start.minute
-            hh_12 = ((hh - 1) % 12) + 1
-            ampm = "PM" if hh >= 12 else "AM"
-            if re.search(r"\b(a las|a)$", reply_text, re.IGNORECASE):
-                reply_text = re.sub(r"\b(a las|a)$", f"a las {hh_12}:{mm:02d} {ampm}.", reply_text)
-            else:
-                reply_text = f"{reply_text} a las {hh_12}:{mm:02d} {ampm}."
-        elif reply_text and not reply_text.endswith((".", "!", "?")):
-            reply_text = reply_text + "."
-
-        # The customer is only told about what actually happened on the calendar
-        if outcome.reply_override:
-            reply_text = outcome.reply_override
-
-        # 8. Save assistant response to DB
         assistant_message = Message(
             id=uuid.uuid4(),
             conversation_id=conversation.id,
-            organization_id=organization_id,
+            organization_id=agent_config.organization_id,
             role="assistant",
-            content=reply_text,
+            content=turn.reply,
         )
         self.db.add(assistant_message)
         await self.db.commit()
 
-        # 9. Send via WhatsApp
-        logger.info(f"Sending WhatsApp reply in conversation {conversation.id}")
-        delivered = False
-        try:
-            await self.whatsapp_client.send_text_message(
-                phone_number_id=clean_phone_id,
-                to=customer_phone,
-                text=reply_text,
-            )
-            delivered = True
-            logger.info(f"WhatsApp reply sent in conversation {conversation.id}")
-        except Exception as e:
-            logger.error(f"Failed to send WhatsApp reply in conversation {conversation.id}: {e}")
+        delivered = await self._deliver(clean_phone_id, customer_phone, turn.reply, conversation.id)
 
-        # 10. Record the real outcome for the dashboard metrics
+        # Record the real outcome for the dashboard metrics
         assistant_message.response_time_ms = int((time.monotonic() - started_at) * 1000)
         assistant_message.resolved = (
-            model_answered and delivered and outcome.reply_override != CALENDAR_FAILED_REPLY
+            turn.model_answered
+            and delivered
+            and turn.outcome.reply_override != CALENDAR_FAILED_REPLY
         )
         await self.db.commit()
+
+    async def process_unsupported_message(
+        self,
+        phone_number_id: str,
+        customer_phone: str,
+        message_type: str,
+        customer_name: str | None,
+        whatsapp_message_id: str | None = None,
+    ) -> None:
+        """Tell the customer the agent can't read this kind of message, instead of staying silent."""
+        clean_phone_id = str(phone_number_id).strip()
+        routed = await self._active_agent(clean_phone_id)
+        if not routed:
+            return
+        agent_config, _org = routed
+
+        conversation = await self._get_or_create_conversation(
+            agent_config.organization_id, customer_phone, (customer_name or "Cliente").strip()
+        )
+        if not await self._save_incoming(conversation, f"[{message_type}]", whatsapp_message_id):
+            return
+
+        self.db.add(
+            Message(
+                id=uuid.uuid4(),
+                conversation_id=conversation.id,
+                organization_id=agent_config.organization_id,
+                role="assistant",
+                content=UNSUPPORTED_MESSAGE_REPLY,
+            )
+        )
+        await self.db.commit()
+        await self._deliver(clean_phone_id, customer_phone, UNSUPPORTED_MESSAGE_REPLY, conversation.id)
 
     async def list_conversations(
         self, organization_id: str | uuid.UUID, page: int = 1, page_size: int = 20

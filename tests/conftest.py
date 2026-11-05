@@ -5,10 +5,10 @@ Key design decisions:
 - `APP_ENV=test` is set via os.environ BEFORE any app imports so that
   `get_settings()` (which is called at module-level in database.py)
   receives the correct env value on first call.
-- Tests use an in-memory SQLite database (via aiosqlite) so they run
-  without a PostgreSQL instance. No Docker required for unit tests.
-- All SQLAlchemy models are created fresh per test session, then
-  each test runs in a rolled-back transaction for isolation.
+- Database tests run on a real PostgreSQL with the real migrations, because the
+  application depends on RLS and exclusion constraints. Set TEST_DATABASE_URL to a
+  disposable database owned by a role that is neither superuser nor BYPASSRLS.
+  Without it, those tests are skipped.
 - `mock_user_*` fixtures provide ready-made UserContext instances for
   different roles without requiring Auth0 or JWT validation.
 
@@ -52,11 +52,8 @@ get_settings.cache_clear()
 from app.admin import models as _admin_models  # noqa: E402, F401
 from app.agents import models as _agent_models  # noqa: E402, F401
 from app.auth.models import UserContext, UserRole  # noqa: E402
-from app.core.database import Base  # noqa: E402
 from app.tenants import models as _tenant_models  # noqa: E402, F401
 
-# In-memory SQLite for unit tests — no Postgres, no Docker needed
-SQLITE_URL = "sqlite+aiosqlite:///:memory:"
 
 # Real PostgreSQL for tests that depend on migrations and RLS. Point this at a
 # disposable database owned by a non-superuser role: its schema is recreated.
@@ -75,6 +72,9 @@ async def _recreate_public_schema() -> None:
 @pytest.fixture(scope="session")
 def migrated_database() -> None:
     """Apply the real migrations once, so RLS policies exist as in production."""
+    if not TEST_DATABASE_URL:
+        pytest.skip("TEST_DATABASE_URL is not set")
+
     asyncio.run(_recreate_public_schema())
     subprocess.run(
         [sys.executable, "-m", "alembic", "upgrade", "head"],
@@ -95,30 +95,11 @@ async def sessions(migrated_database) -> AsyncGenerator[async_sessionmaker[Async
     await engine.dispose()
 
 
-@pytest_asyncio.fixture(scope="session")
-async def engine():
-    """Create a shared async engine for the test session."""
-    eng = create_async_engine(SQLITE_URL, echo=False)
-    async with eng.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield eng
-    await eng.dispose()
-
-
 @pytest_asyncio.fixture
-async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
-    """
-    Provide a transactional AsyncSession that is rolled back after each test.
-
-    This ensures test isolation without truncating tables between tests.
-    """
-    async with engine.begin() as conn:
-        session = AsyncSession(bind=conn, expire_on_commit=False)
-        try:
-            yield session
-        finally:
-            await session.close()
-            await conn.rollback()
+async def db_session(sessions) -> AsyncGenerator[AsyncSession, None]:
+    """A single session on migrated PostgreSQL."""
+    async with sessions() as session:
+        yield session
 
 
 # ---------------------------------------------------------------------------

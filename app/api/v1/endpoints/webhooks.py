@@ -19,8 +19,8 @@ from app.integrations.whatsapp.schemas import WhatsAppWebhookPayload
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# In-memory deduplication set to avoid processing duplicate webhook deliveries from Meta
-_PROCESSED_MESSAGE_IDS: set[str] = set()
+# Customers get a clear answer for these. Reactions and system events need no reply.
+UNSUPPORTED_TYPES = {"audio", "contacts", "document", "image", "location", "sticker", "video"}
 
 
 def _has_valid_signature(raw_body: bytes, signature_header: str, app_secret: str) -> bool:
@@ -153,42 +153,35 @@ async def receive_whatsapp_webhook(
             if not value.messages:
                 continue
 
-            message = value.messages[0]
-            msg_id = getattr(message, "id", None)
-            if msg_id and msg_id in _PROCESSED_MESSAGE_IDS:
-                logger.info(f"Ignored duplicate incoming WhatsApp message: {msg_id}")
-                continue
-            if msg_id:
-                _PROCESSED_MESSAGE_IDS.add(msg_id)
-                if len(_PROCESSED_MESSAGE_IDS) > 2000:
-                    _PROCESSED_MESSAGE_IDS.clear()
-
-            contact = value.contacts[0] if (value.contacts and len(value.contacts) > 0) else None
-
-            # We only process text messages
-            if message.type != "text" or not message.text:
-                logger.info(f"Ignored non-text WhatsApp message type: {message.type}")
-                continue
-
             phone_number_id = value.metadata.get("phone_number_id")
             if not phone_number_id:
                 logger.warning("Ignored WhatsApp message without phone_number_id metadata")
                 continue
 
-            customer_name = (contact.profile.name if (contact and contact.profile) else None) or "Cliente WhatsApp"
-            customer_phone = message.from_
-            text_body = message.text.body
+            contact = value.contacts[0] if value.contacts else None
+            customer_name = (contact.profile.name if contact else None) or "Cliente WhatsApp"
 
-            logger.info(f"WhatsApp text message {msg_id} received on phone_id {phone_number_id}")
-
-            # Queue processing in the background so Meta gets 200 immediately
-            background_tasks.add_task(
-                process_message_background_task,
-                phone_number_id=str(phone_number_id),
-                customer_phone=customer_phone,
-                text_content=text_body,
-                customer_name=customer_name,
-            )
+            # Meta may batch several messages in one delivery
+            for message in value.messages:
+                logger.info(f"WhatsApp {message.type} message {message.id} on phone_id {phone_number_id}")
+                if message.type == "text" and message.text:
+                    background_tasks.add_task(
+                        process_message_background_task,
+                        phone_number_id=str(phone_number_id),
+                        customer_phone=message.from_,
+                        text_content=message.text.body,
+                        customer_name=customer_name,
+                        whatsapp_message_id=message.id,
+                    )
+                elif message.type in UNSUPPORTED_TYPES:
+                    background_tasks.add_task(
+                        process_unsupported_background_task,
+                        phone_number_id=str(phone_number_id),
+                        customer_phone=message.from_,
+                        message_type=message.type,
+                        customer_name=customer_name,
+                        whatsapp_message_id=message.id,
+                    )
 
     return {"status": "ok"}
 
@@ -198,6 +191,7 @@ async def process_message_background_task(
     customer_phone: str,
     text_content: str,
     customer_name: str,
+    whatsapp_message_id: str | None = None,
 ):
     """
     Background task to process incoming WhatsApp message.
@@ -207,12 +201,35 @@ async def process_message_background_task(
         from app.core.database import AsyncSessionFactory
 
         async with AsyncSessionFactory() as db:
-            service = ConversationService(db)
-            await service.process_incoming_message(
+            await ConversationService(db).process_incoming_message(
                 phone_number_id=phone_number_id,
                 customer_phone=customer_phone,
                 text_content=text_content,
                 customer_name=customer_name,
+                whatsapp_message_id=whatsapp_message_id,
             )
     except Exception as e:
         logger.exception(f"Unhandled error in WhatsApp background message processing: {e}")
+
+
+async def process_unsupported_background_task(
+    phone_number_id: str,
+    customer_phone: str,
+    message_type: str,
+    customer_name: str,
+    whatsapp_message_id: str | None = None,
+):
+    """Background task to answer a message type the agent can't read."""
+    try:
+        from app.core.database import AsyncSessionFactory
+
+        async with AsyncSessionFactory() as db:
+            await ConversationService(db).process_unsupported_message(
+                phone_number_id=phone_number_id,
+                customer_phone=customer_phone,
+                message_type=message_type,
+                customer_name=customer_name,
+                whatsapp_message_id=whatsapp_message_id,
+            )
+    except Exception as e:
+        logger.exception(f"Unhandled error answering unsupported WhatsApp message: {e}")
