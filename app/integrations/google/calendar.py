@@ -7,10 +7,11 @@ import re
 import uuid
 
 import httpx
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.core.database import bind_tenant
 from app.integrations.models import IntegrationCredential
 
 
@@ -50,23 +51,11 @@ class GoogleCalendarService:
         if self._access_token:
             return self._access_token
 
-        org_u = None
-        try:
-            org_u = uuid.UUID(str(self.organization_id))
-        except Exception:
-            pass
+        org_u = uuid.UUID(self.organization_id)
+        await bind_tenant(self.db, org_u)
 
-        try:
-            await self.db.execute(
-                text("SELECT set_config('app.current_organization_id', :org_id, true)"),
-                {"org_id": str(org_u or self.organization_id)},
-            )
-        except Exception:
-            pass
-
-        cond = (IntegrationCredential.organization_id == org_u) if org_u is not None else (IntegrationCredential.organization_id == self.organization_id)
         stmt = select(IntegrationCredential).where(
-            cond,
+            IntegrationCredential.organization_id == org_u,
             IntegrationCredential.provider == "google",
         )
         result = await self.db.execute(stmt)

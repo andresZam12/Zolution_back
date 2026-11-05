@@ -1,22 +1,11 @@
 """
 Tenant context middleware.
 
-Extracts the `organization_id` from a verified JWT and sets it as a
-PostgreSQL session-level variable (`app.current_organization_id`).
-This variable is the mechanism by which Row-Level Security (RLS) policies
-enforce tenant data isolation at the database level.
+Extracts the `organization_id` from a signature-verified Zolution JWT so the
+database session can bind itself to that tenant. Tokens that fail verification
+get no tenant, and RLS then returns no tenant rows.
 
-How RLS uses this:
-    CREATE POLICY tenant_isolation ON some_table
-        USING (organization_id = current_setting('app.current_organization_id')::uuid);
-
-This middleware runs AFTER auth token verification. Routes that do not
-require authentication (e.g. /health, /webhook) are excluded.
-
-Superadmin requests: `organization_id` will be None. The middleware sets
-the variable to an empty string, which means no RLS policy will match —
-but superadmin routes use `get_superadmin_db_session()` which disables
-RLS entirely via `SET LOCAL row_security = off`.
+This middleware does NOT authenticate: routes still use `get_current_user()`.
 """
 
 import logging
@@ -43,16 +32,8 @@ _EXCLUDED_PATHS: frozenset[str] = frozenset(
 
 class TenantContextMiddleware(BaseHTTPMiddleware):
     """
-    Starlette middleware that injects tenant context into each request.
-
-    Reads the JWT from the Authorization header (without full verification —
-    the FastAPI dependency does full verification). Extracts `org_id` and
-    stores it in `request.state.organization_id` for use by the DB session
-    dependency.
-
-    Note: This middleware does NOT replace auth dependency verification.
-    It only makes `organization_id` available on the request state early,
-    so the DB session can set the RLS context variable.
+    Starlette middleware that makes the verified tenant available early, so
+    `get_db_session()` can bind the session to it.
     """
 
     async def dispatch(
@@ -79,17 +60,15 @@ class TenantContextMiddleware(BaseHTTPMiddleware):
     @staticmethod
     def _extract_org_id(token: str) -> str | None:
         """
-        Decode JWT payload without signature verification to extract org_id.
+        Return the tenant of a valid Zolution token, or None.
 
-        Verification is done by `get_current_user()` in the route handler.
-        Here we only need the claim value to set the DB context variable.
-        Supports both native Zolution HS256 tokens (`organization_id`) and
-        Auth0 RS256 tokens (`https://api.zolution.app/org_id`).
+        Auth0 tokens are not resolved here; their routes bind the session with
+        the organization from the `UserContext` built by `get_current_user()`.
         """
         try:
-            payload = jwt.get_unverified_claims(token)
-            namespace = "https://api.zolution.app"
-            org_id = payload.get("organization_id") or payload.get(f"{namespace}/org_id")
-            return str(org_id) if org_id else None
+            payload = jwt.decode(token, get_settings().SECRET_KEY, algorithms=["HS256"])
         except JWTError:
             return None
+        namespace = "https://api.zolution.app"
+        org_id = payload.get("organization_id") or payload.get(f"{namespace}/org_id")
+        return str(org_id) if org_id else None

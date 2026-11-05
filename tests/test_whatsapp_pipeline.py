@@ -1,28 +1,20 @@
 """
 Regression tests for the WhatsApp pipeline.
 
-The pipeline depends on PostgreSQL features, so tests that touch the database
-run only when TEST_DATABASE_URL points at a disposable database. All its tables
-are dropped and recreated for every test. LLM, Calendar and WhatsApp are fakes.
-
-    TEST_DATABASE_URL=postgresql+asyncpg://user:pass@localhost/zolution_test pytest tests/
+Tests that touch the database need TEST_DATABASE_URL (see conftest.py). They run
+on the real migrations, with RLS active. LLM, Calendar and WhatsApp are fakes.
 """
 
 from __future__ import annotations
 
-import os
 import uuid
-from collections.abc import AsyncGenerator
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import ClassVar
 
 import httpx
 import pytest
-import pytest_asyncio
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import NullPool
 
 from app.admin import models as _admin_models  # noqa: F401
 from app.agents.models import AgentConfig
@@ -35,13 +27,11 @@ from app.conversations.services import (
     ConversationService,
     _parse_appointment_start,
 )
-from app.core.database import Base
+from app.core.database import bind_tenant
 from app.integrations import models as _integration_models  # noqa: F401
 from app.integrations.google.calendar import CalendarUnavailableError, GoogleCalendarService
 from app.tenants.models import Organization
-
-TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
-requires_postgres = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+from tests.conftest import requires_postgres
 
 CUSTOMER = "573000000001"
 NEXT_WEEK = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
@@ -116,21 +106,12 @@ def fakes(monkeypatch):
     monkeypatch.setattr(services, "WhatsAppClient", FakeWhatsApp)
 
 
-@pytest_asyncio.fixture
-async def sessions() -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
-    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-    yield async_sessionmaker(engine, expire_on_commit=False)
-    await engine.dispose()
-
-
 async def _add_tenant(sessions, name: str, phone_id: str | None, status: str = "active"):
     organization_id = uuid.uuid4()
     async with sessions() as db:
         db.add(Organization(id=organization_id, name=name, slug=name.lower(), plan="starter", status="active"))
         await db.flush()
+        await bind_tenant(db, organization_id)
         db.add(
             AgentConfig(
                 organization_id=organization_id,
@@ -151,10 +132,17 @@ async def _incoming(sessions, phone_id: str, text: str, customer: str = CUSTOMER
         await ConversationService(db).process_incoming_message(phone_id, customer, text, "Ana")
 
 
-async def _conversations(sessions, customer: str = CUSTOMER) -> list[Conversation]:
+async def _conversations(sessions, organization_id: uuid.UUID) -> list[Conversation]:
     async with sessions() as db:
-        rows = await db.execute(select(Conversation).where(Conversation.customer_phone == customer))
+        await bind_tenant(db, organization_id)
+        rows = await db.execute(select(Conversation).where(Conversation.customer_phone == CUSTOMER))
         return list(rows.scalars().all())
+
+
+async def _agent_config(sessions, organization_id: uuid.UUID) -> AgentConfig:
+    async with sessions() as db:
+        await bind_tenant(db, organization_id)
+        return (await db.execute(select(AgentConfig))).scalar_one()
 
 
 def _event(event_id: str = "old") -> dict:
@@ -169,28 +157,25 @@ def _event(event_id: str = "old") -> dict:
 @requires_postgres
 @pytest.mark.asyncio
 async def test_unknown_number_is_not_assigned_to_any_tenant(sessions):
-    await _add_tenant(sessions, "Older", "111")
-    await _add_tenant(sessions, "Newest", "222")
+    older = await _add_tenant(sessions, "Older", "111")
+    newest = await _add_tenant(sessions, "Newest", "222")
 
     await _incoming(sessions, "unknown", "hola")
 
-    async with sessions() as db:
-        bindings = set((await db.execute(select(AgentConfig.whatsapp_phone_number_id))).scalars())
-    assert bindings == {"111", "222"}
+    assert (await _agent_config(sessions, older)).whatsapp_phone_number_id == "111"
+    assert (await _agent_config(sessions, newest)).whatsapp_phone_number_id == "222"
     assert FakeWhatsApp.sent == []
-    assert await _conversations(sessions) == []
+    assert await _conversations(sessions, newest) == []
 
 
 @requires_postgres
 @pytest.mark.asyncio
 async def test_suspended_agent_stays_silent_and_suspended(sessions):
-    await _add_tenant(sessions, "Paused", "111", status="suspended")
+    organization_id = await _add_tenant(sessions, "Paused", "111", status="suspended")
 
     await _incoming(sessions, "111", "hola")
 
-    async with sessions() as db:
-        status = (await db.execute(select(AgentConfig.status))).scalar_one()
-    assert status == "suspended"
+    assert (await _agent_config(sessions, organization_id)).status == "suspended"
     assert FakeWhatsApp.sent == []
 
 
@@ -216,7 +201,8 @@ async def test_same_customer_keeps_separate_threads_per_tenant(sessions):
     await _incoming(sessions, "111", "secreto para A")
     await _incoming(sessions, "222", "hola B")
 
-    assert {c.organization_id for c in await _conversations(sessions)} == {org_a, org_b}
+    assert len(await _conversations(sessions, org_a)) == 1
+    assert len(await _conversations(sessions, org_b)) == 1
     assert FakeLLM.histories[-1] == [("user", "hola B")]
 
 
@@ -227,8 +213,10 @@ async def test_messages_of_a_previously_moved_thread_stay_hidden(sessions):
     org_b = await _add_tenant(sessions, "NegocioB", "222")
     conversation_id = uuid.uuid4()
     async with sessions() as db:
+        await bind_tenant(db, org_b)
         db.add(Conversation(id=conversation_id, organization_id=org_b, customer_phone=CUSTOMER, status="active"))
-        await db.flush()
+        await db.commit()
+        await bind_tenant(db, org_a)
         db.add(Message(id=uuid.uuid4(), conversation_id=conversation_id, organization_id=org_a, role="user", content="secreto para A"))
         await db.commit()
 
@@ -280,7 +268,7 @@ async def test_booking_is_confirmed_once_the_event_exists(sessions):
     ],
 )
 async def test_failed_booking_is_never_confirmed(sessions, setup):
-    await _add_tenant(sessions, "Negocio", "111")
+    organization_id = await _add_tenant(sessions, "Negocio", "111")
     setup()
     FakeLLM.reply = f"Listo, quedó agendada.\n[[AGENDAR|{NEXT_WEEK}|10:00]]"
 
@@ -288,6 +276,7 @@ async def test_failed_booking_is_never_confirmed(sessions, setup):
 
     assert FakeWhatsApp.sent == [CALENDAR_FAILED_REPLY]
     async with sessions() as db:
+        await bind_tenant(db, organization_id)
         stored = (await db.execute(select(Message).where(Message.role == "assistant"))).scalar_one()
     assert stored.content == CALENDAR_FAILED_REPLY
 

@@ -23,6 +23,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import bind_tenant
 from app.tenants.models import Organization
 from app.tenants.schemas import (
     OrganizationCreate,
@@ -116,6 +117,7 @@ class OrganizationService:
         )
         db.add(org)
         await db.flush()  # Flush to get the generated ID without committing
+        await bind_tenant(db, org.id)
 
         # Create the initial agent config so onboarding can start immediately
         from app.agents.models import (

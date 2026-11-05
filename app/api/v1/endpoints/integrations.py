@@ -8,14 +8,14 @@ from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models import AgentConfig
 from app.auth.dependencies import get_current_user
 from app.auth.models import UserContext
 from app.core.config import get_settings
-from app.core.database import get_db_session
+from app.core.database import bind_tenant, get_db_session
 from app.integrations.google.auth import GoogleOAuthService
 from app.integrations.models import IntegrationCredential
 from app.integrations.schemas import (
@@ -26,16 +26,6 @@ from app.integrations.schemas import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-
-async def _ensure_rls_context(db: AsyncSession, organization_id: str) -> None:
-    try:
-        await db.execute(
-            text("SELECT set_config('app.current_organization_id', :org_id, true)"),
-            {"org_id": str(organization_id)},
-        )
-    except Exception:
-        pass
 
 
 @router.get("/google/authorize", response_model=GoogleOAuthUrlResponse)
@@ -90,7 +80,7 @@ async def google_callback(
             detail="No se encontró la organización activa para vincular Google Calendar.",
         )
 
-    await _ensure_rls_context(db, str(org_uuid))
+    await bind_tenant(db, org_uuid)
 
     settings = get_settings()
     target_redirect = payload.redirect_uri or (
@@ -178,7 +168,7 @@ async def get_integrations_status(
     if not org_uuid:
         return [IntegrationStatusResponse(provider="google", is_connected=False)]
 
-    await _ensure_rls_context(db, str(org_uuid))
+    await bind_tenant(db, org_uuid)
 
     stmt = select(IntegrationCredential).where(
         IntegrationCredential.organization_id == org_uuid
@@ -223,7 +213,7 @@ async def disconnect_google(
             detail="No se encontró la organización activa.",
         )
 
-    await _ensure_rls_context(db, str(org_uuid))
+    await bind_tenant(db, org_uuid)
 
     stmt = select(IntegrationCredential).where(
         IntegrationCredential.organization_id == org_uuid,

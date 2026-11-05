@@ -8,12 +8,13 @@ import logging
 import re
 import uuid
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents.models import AgentConfig
 from app.conversations.models import Conversation, Message
+from app.core.database import bind_tenant, resolve_whatsapp_tenant
 from app.integrations.google.calendar import GoogleCalendarService
 from app.integrations.whatsapp.client import WhatsAppClient
 from app.llm_providers.base import ConversationMessage
@@ -130,14 +131,16 @@ class ConversationService:
         )
 
         # 1. Route strictly by the receiving number. Unknown numbers are never assigned to a tenant.
-        agent_res = await self.db.execute(
-            select(AgentConfig).where(AgentConfig.whatsapp_phone_number_id == clean_phone_id)
-        )
-        agent_config = agent_res.scalar_one_or_none()
-
-        if not agent_config:
+        routed_organization_id = await resolve_whatsapp_tenant(self.db, clean_phone_id)
+        if not routed_organization_id:
             logger.warning(f"No AgentConfig linked to WhatsApp phone_number_id: {clean_phone_id}")
             return
+
+        await bind_tenant(self.db, routed_organization_id)
+        agent_res = await self.db.execute(
+            select(AgentConfig).where(AgentConfig.organization_id == routed_organization_id)
+        )
+        agent_config = agent_res.scalar_one()
 
         org_res = await self.db.execute(
             select(Organization).where(Organization.id == agent_config.organization_id)
@@ -149,12 +152,6 @@ class ConversationService:
             return
 
         organization_id = str(agent_config.organization_id)
-
-        # Set RLS context for this tenant for all subsequent queries (Conversation, Message, Calendar)
-        await self.db.execute(
-            text("SELECT set_config('app.current_organization_id', :org_id, false)"),
-            {"org_id": organization_id},
-        )
 
         org_name = org.name or "tu negocio"
 

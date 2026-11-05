@@ -16,14 +16,13 @@ in a route or a script, so it can be:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 import json
 import logging
 import re
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models import AgentConfig
@@ -35,6 +34,7 @@ from app.agents.schemas import (
     OnboardingAnswers,
     ServiceItem,
 )
+from app.core.database import bind_tenant
 from app.llm_providers.base import ConversationMessage as LLMConversationMessage
 from app.llm_providers.factory import LLMProviderFactory
 from app.tenants.models import Organization
@@ -59,13 +59,7 @@ class AgentConfigService:
         Raises:
             HTTPException 404: No agent config found for the organization.
         """
-        try:
-            await db.execute(
-                text("SELECT set_config('app.current_organization_id', :org_id, true)"),
-                {"org_id": str(organization_id)},
-            )
-        except Exception:
-            pass
+        await bind_tenant(db, organization_id)
 
         result = await db.execute(
             select(AgentConfig).where(AgentConfig.organization_id == organization_id)
@@ -232,10 +226,7 @@ class AgentConfigService:
 
         db.add(config)
         await db.flush()
-        if not getattr(config, "created_at", None):
-            config.created_at = datetime.utcnow()
-        if not getattr(config, "updated_at", None):
-            config.updated_at = datetime.utcnow()
+        await db.refresh(config)  # Load server-generated timestamps for the response
         logger.info("AgentConfig updated for org %s", organization_id)
         return config
 

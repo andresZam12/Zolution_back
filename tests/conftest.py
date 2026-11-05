@@ -31,12 +31,18 @@ import os
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("DATABASE_PASSWORD", "test_password")
 
+import asyncio
+import subprocess
+import sys
 import uuid
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 # Clear the lru_cache so get_settings() re-reads our env vars above
 from app.core.config import get_settings
@@ -51,6 +57,42 @@ from app.tenants import models as _tenant_models  # noqa: E402, F401
 
 # In-memory SQLite for unit tests — no Postgres, no Docker needed
 SQLITE_URL = "sqlite+aiosqlite:///:memory:"
+
+# Real PostgreSQL for tests that depend on migrations and RLS. Point this at a
+# disposable database owned by a non-superuser role: its schema is recreated.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+requires_postgres = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL is not set")
+
+
+async def _recreate_public_schema() -> None:
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    async with engine.begin() as conn:
+        await conn.execute(text("DROP SCHEMA public CASCADE"))
+        await conn.execute(text("CREATE SCHEMA public"))
+    await engine.dispose()
+
+
+@pytest.fixture(scope="session")
+def migrated_database() -> None:
+    """Apply the real migrations once, so RLS policies exist as in production."""
+    asyncio.run(_recreate_public_schema())
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "DATABASE_URL": TEST_DATABASE_URL},
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest_asyncio.fixture
+async def sessions(migrated_database) -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
+    """Session factory on migrated PostgreSQL, with empty tables for every test."""
+    engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
+    async with engine.begin() as conn:
+        await conn.execute(text("TRUNCATE organizations, users, verification_codes CASCADE"))
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="session")

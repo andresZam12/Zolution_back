@@ -8,7 +8,7 @@ from app.auth.dependencies import (
     require_permission,
 )
 from app.auth.models import UserContext, UserRole
-from app.core.database import get_db_session, get_superadmin_db_session
+from app.core.database import get_db_session
 
 __all__ = [
     "get_current_user",
@@ -17,5 +17,4 @@ __all__ = [
     "UserContext",
     "UserRole",
     "get_db_session",
-    "get_superadmin_db_session",
 ]

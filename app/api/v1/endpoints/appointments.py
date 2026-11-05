@@ -11,14 +11,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.agents.models import AgentConfig
 from app.auth.dependencies import get_current_user
 from app.auth.models import UserContext
-from app.core.database import get_db_session
+from app.core.database import bind_tenant, get_db_session
 from app.integrations.google.calendar import GoogleCalendarService
 from app.tenants.models import Organization
 
@@ -88,13 +88,7 @@ def _require_org_id(user: UserContext) -> uuid.UUID:
 
 
 async def _get_or_create_agent_config(db: AsyncSession, org_id: uuid.UUID) -> AgentConfig:
-    try:
-        await db.execute(
-            text("SELECT set_config('app.current_organization_id', :org_id, true)"),
-            {"org_id": str(org_id)},
-        )
-    except Exception:
-        pass
+    await bind_tenant(db, org_id)
 
     stmt = select(AgentConfig).where(AgentConfig.organization_id == org_id)
     cfg = (await db.execute(stmt)).scalar_one_or_none()

@@ -19,14 +19,14 @@ import httpx
 from email_validator import EmailNotValidError, validate_email
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.models import AgentConfig
 from app.auth.dependencies import get_current_user
 from app.auth.models import UserContext
 from app.core.config import get_settings
-from app.core.database import get_db_session
+from app.core.database import bind_tenant, get_db_session
 from app.core.email import send_verification_email
 from app.core.security import (
     create_access_token,
@@ -127,17 +127,6 @@ async def _normalize_and_validate_email(raw_email: str) -> str:
             detail="El correo electrónico no es válido o su dominio no puede recibir correos.",
         ) from exc
     return info.normalized.lower()
-
-
-async def _set_tenant_context(db: AsyncSession, organization_id: uuid.UUID) -> None:
-    """
-    Set the RLS tenant variable for the current transaction so inserts into
-    tenant-scoped tables (agent_configs, integration_credentials) pass policy checks.
-    """
-    await db.execute(
-        text("SELECT set_config('app.current_organization_id', :org_id, true)"),
-        {"org_id": str(organization_id)},
-    )
 
 
 @router.post("/register-request", status_code=status.HTTP_200_OK)
@@ -287,7 +276,7 @@ async def verify_code_and_register(
     await db.flush()  # Populates org.id
 
     # agent_configs is protected by RLS: bind this transaction to the new tenant
-    await _set_tenant_context(db, org.id)
+    await bind_tenant(db, org.id)
 
     # Create default AgentConfig with initial onboarding metadata
     agent = AgentConfig(
@@ -392,7 +381,7 @@ async def login(
         org_stmt = select(Organization).where(Organization.id == user.organization_id)
         org = (await db.execute(org_stmt)).scalar_one_or_none()
         try:
-            await _set_tenant_context(db, user.organization_id)
+            await bind_tenant(db, user.organization_id)
             agent_stmt = select(AgentConfig).where(AgentConfig.organization_id == user.organization_id)
             agent_cfg = (await db.execute(agent_stmt)).scalar_one_or_none()
             if agent_cfg and isinstance(agent_cfg.onboarding_answers, dict):
@@ -568,7 +557,7 @@ async def google_auth_callback(
         )
         db.add(org)
         await db.flush()
-        await _set_tenant_context(db, org.id)
+        await bind_tenant(db, org.id)
 
         # Provision initial AgentConfig
         agent = AgentConfig(
@@ -600,7 +589,7 @@ async def google_auth_callback(
     # Automatically save Google Calendar integration credentials ONLY if calendar permissions were granted
     granted_scopes = tokens.get("scopes") or ""
     if org and "calendar" in granted_scopes:
-        await _set_tenant_context(db, org.id)
+        await bind_tenant(db, org.id)
         cred_stmt = select(IntegrationCredential).where(
             IntegrationCredential.organization_id == org.id,
             IntegrationCredential.provider == "google",
@@ -628,7 +617,7 @@ async def google_auth_callback(
     saved_industry: Optional[str] = None
     if org:
         try:
-            await _set_tenant_context(db, org.id)
+            await bind_tenant(db, org.id)
             agent_stmt = select(AgentConfig).where(AgentConfig.organization_id == org.id)
             agent_cfg = (await db.execute(agent_stmt)).scalar_one_or_none()
             if agent_cfg and isinstance(agent_cfg.onboarding_answers, dict):

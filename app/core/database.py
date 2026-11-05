@@ -4,11 +4,9 @@ Async database engine, session factory, and FastAPI dependencies.
 Architecture decisions:
 - SQLAlchemy async engine with asyncpg driver (see ADR-002)
 - One AsyncSession per request, injected via FastAPI's Depends()
-- RLS enforcement: `app.current_organization_id` is set at the start of
-  every request by TenantContextMiddleware using the verified JWT
-- Superadmin connection: separate engine with row_security disabled;
-  only accessible from admin service layer, never from a request context
-  that originated from a JWT
+- RLS enforcement: `bind_tenant()` ties a session to one organization and
+  `app.current_organization_id` is re-applied at the start of every transaction.
+  Without a tenant, tenant tables return no rows (fail closed).
 
 Usage:
     from app.core.database import get_db_session, Base
@@ -22,14 +20,14 @@ from collections.abc import AsyncGenerator
 import uuid
 
 from fastapi import Request
-from sqlalchemy import text
+from sqlalchemy import Connection, event, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session, SessionTransaction
 
 from app.core.config import get_settings
 
@@ -73,12 +71,6 @@ engine: AsyncEngine = _create_engine(
     echo=settings.DEBUG,
 )
 
-# Superadmin engine — bypasses RLS via a dedicated DB user
-_superadmin_engine: AsyncEngine = _create_engine(
-    settings.SUPERADMIN_DATABASE_URL,
-    echo=False,  # Never log superadmin queries to avoid leaking tenant data
-)
-
 # ---------------------------------------------------------------------------
 # Session factories
 # ---------------------------------------------------------------------------
@@ -91,11 +83,49 @@ AsyncSessionFactory = async_sessionmaker(
 AsyncSessionLocal = AsyncSessionFactory
 
 
-_SuperadminSessionFactory = async_sessionmaker(
-    bind=_superadmin_engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-)
+# ---------------------------------------------------------------------------
+# Tenant context
+# ---------------------------------------------------------------------------
+
+_TENANT_KEY = "tenant_organization_id"
+_SET_TENANT = text("SELECT set_config('app.current_organization_id', :org_id, true)")
+_SET_ROUTING_PHONE = text("SELECT set_config('app.routing_phone_number_id', :phone, true)")
+
+
+@event.listens_for(Session, "after_begin")
+def _apply_tenant_context(
+    session: Session, transaction: SessionTransaction, connection: Connection
+) -> None:
+    """A transaction-local setting ends at commit, so each new transaction sets it again."""
+    organization_id = session.info.get(_TENANT_KEY)
+    if organization_id:
+        connection.execute(_SET_TENANT, {"org_id": organization_id})
+
+
+async def bind_tenant(session: AsyncSession, organization_id: uuid.UUID | str) -> None:
+    """Scope this session to one organization for all its remaining transactions."""
+    tenant = str(uuid.UUID(str(organization_id)))
+    session.info[_TENANT_KEY] = tenant
+    await session.execute(_SET_TENANT, {"org_id": tenant})
+
+
+async def resolve_whatsapp_tenant(session: AsyncSession, phone_number_id: str) -> uuid.UUID | None:
+    """
+    Find the organization that owns a WhatsApp number.
+
+    The number is exposed to the `whatsapp_routing` policy only for this lookup.
+    """
+    from app.agents.models import AgentConfig
+
+    await session.execute(_SET_ROUTING_PHONE, {"phone": phone_number_id})
+    result = await session.execute(
+        select(AgentConfig.organization_id).where(
+            AgentConfig.whatsapp_phone_number_id == phone_number_id
+        )
+    )
+    organization_id = result.scalar_one_or_none()
+    await session.execute(_SET_ROUTING_PHONE, {"phone": ""})
+    return organization_id
 
 
 # ---------------------------------------------------------------------------
@@ -107,44 +137,14 @@ async def get_db_session(request: Request = None) -> AsyncGenerator[AsyncSession
     """
     Yield an async database session for a single request.
 
-    RLS is enforced automatically — the session will only see rows matching
-    the `organization_id` set by TenantContextMiddleware.
-
-    Rolls back on any unhandled exception to keep the connection clean.
+    Requests with a verified token start bound to their organization. Rolls back
+    on any unhandled exception to keep the connection clean.
     """
     async with AsyncSessionFactory() as session:
         try:
-            if request is not None:
-                org_id = getattr(request.state, "organization_id", None)
-                if org_id:
-                    try:
-                        valid_org_uuid = str(uuid.UUID(str(org_id)))
-                        await session.execute(
-                            text("SELECT set_config('app.current_organization_id', :org_id, true)"),
-                            {"org_id": valid_org_uuid},
-                        )
-                    except (ValueError, Exception):
-                        pass
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-
-
-async def get_superadmin_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """
-    Yield an async database session with RLS disabled.
-
-    SECURITY: This dependency must ONLY be used in routes under /admin/*.
-    It should NEVER be imported or used in tenant-facing endpoints.
-    All calls through this session are logged to audit_log by the
-    admin service layer — not here, to keep concerns separated.
-    """
-    async with _SuperadminSessionFactory() as session:
-        try:
-            # Explicitly disable row security for this session
-            await session.execute(text("SET LOCAL row_security = off"))
+            organization_id = getattr(getattr(request, "state", None), "organization_id", None)
+            if organization_id:
+                await bind_tenant(session, organization_id)
             yield session
             await session.commit()
         except Exception:

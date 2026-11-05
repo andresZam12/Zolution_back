@@ -12,7 +12,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
@@ -28,7 +28,7 @@ from app.conversations.schemas import (
     MessageResponse,
 )
 from app.conversations.services import ConversationService
-from app.core.database import get_db_session
+from app.core.database import bind_tenant, get_db_session
 from app.integrations.google.calendar import GoogleCalendarService
 from app.llm_providers.base import ConversationMessage as LLMConversationMessage
 from app.llm_providers.factory import LLMProviderFactory
@@ -70,20 +70,6 @@ def _require_org_id(user: UserContext) -> str:
     return str(user.organization_id)
 
 
-async def _ensure_rls(db: AsyncSession, org_id: str) -> None:
-    try:
-        await db.execute(
-            text("SELECT set_config('app.current_organization_id', :org_id, false)"),
-            {"org_id": str(org_id)},
-        )
-        await db.execute(
-            text("SELECT set_config('app.current_organization_id', :org_id, true)"),
-            {"org_id": str(org_id)},
-        )
-    except Exception as exc:
-        logger.warning("Could not set RLS context variable: %s", exc)
-
-
 @router.get(
     "",
     response_model=ConversationListResponse,
@@ -99,7 +85,7 @@ async def list_conversations(
     Retrieve paginated list of conversations for the authenticated tenant.
     """
     org_id = _require_org_id(user)
-    await _ensure_rls(db, org_id)
+    await bind_tenant(db, org_id)
     service = ConversationService(db)
 
     conversations, total = await service.list_conversations(
@@ -147,7 +133,7 @@ async def get_conversation(
     Retrieve a specific conversation thread and its full message history.
     """
     org_id = _require_org_id(user)
-    await _ensure_rls(db, org_id)
+    await bind_tenant(db, org_id)
     service = ConversationService(db)
 
     conv = await service.get_conversation(
@@ -188,7 +174,7 @@ async def simulate_conversation_turn(
     try:
         org_id_str = _require_org_id(user)
         org_uuid = uuid.UUID(org_id_str)
-        await _ensure_rls(db, org_id_str)
+        await bind_tenant(db, org_id_str)
 
         # 1. Fetch or create Organization
         org = None

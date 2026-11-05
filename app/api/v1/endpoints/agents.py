@@ -17,7 +17,7 @@ import logging
 import uuid
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,24 +47,12 @@ def _require_owner(user: UserContext) -> None:
     return
 
 
-async def _resolve_org_context(user: UserContext, db: AsyncSession, request: Request | None = None) -> UUID:
-    """Resolve organization_id from user context, DB query, or create organization fallback."""
+async def _resolve_org_context(user: UserContext, db: AsyncSession) -> UUID:
+    """Resolve organization_id from the verified user, or create a new organization for them."""
     if user.organization_id is not None:
         return user.organization_id
 
-    # 1. Check X-Organization-ID header
-    if request:
-        hdr = request.headers.get("x-organization-id")
-        if hdr:
-            try:
-                return UUID(hdr)
-            except ValueError:
-                org_res = await db.execute(select(Organization).where(Organization.slug == hdr))
-                org = org_res.scalar_one_or_none()
-                if org:
-                    return org.id
-
-    # 2. Check DB by user_id
+    # 1. Check DB by user_id
     try:
         user_res = await db.execute(select(User).where(User.id == user.user_id))
         db_user = user_res.scalar_one_or_none()
@@ -73,7 +61,7 @@ async def _resolve_org_context(user: UserContext, db: AsyncSession, request: Req
     except Exception:
         pass
 
-    # 3. Check DB by email
+    # 2. Check DB by email
     try:
         user_res = await db.execute(select(User).where(User.email == user.email))
         db_user = user_res.scalar_one_or_none()
@@ -82,16 +70,7 @@ async def _resolve_org_context(user: UserContext, db: AsyncSession, request: Req
     except Exception:
         pass
 
-    # 4. Fallback: find existing organization
-    try:
-        org_res = await db.execute(select(Organization).limit(1))
-        existing_org = org_res.scalar_one_or_none()
-        if existing_org:
-            return existing_org.id
-    except Exception:
-        pass
-
-    # 5. Create new organization for the user
+    # 3. Create new organization for the user
     new_org = Organization(
         id=uuid.uuid4(),
         name=user.email.split("@")[0] if user.email else "Mi Negocio",
@@ -237,11 +216,10 @@ async def activate_agent(
 )
 async def update_my_agent_config(
     data: AgentConfigUpdate,
-    request: Request,
     user: UserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ) -> AgentConfigResponse:
-    org_id = await _resolve_org_context(user, db, request)
+    org_id = await _resolve_org_context(user, db)
     config = await _service.update_config(org_id, data, db)
     return AgentConfigResponse.model_validate(config)
 
