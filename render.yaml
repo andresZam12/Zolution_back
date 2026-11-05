@@ -13,7 +13,7 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.0
       - key: APP_ENV
-        value: development
+        value: production
       - key: DATABASE_URL
         fromDatabase:
           name: zolution-db
@@ -29,7 +29,9 @@ services:
       - key: GOOGLE_API_KEY
         sync: false
       - key: WHATSAPP_VERIFY_TOKEN
-        value: zol_verify_sec_9941a
+        sync: false
+      - key: WHATSAPP_APP_SECRET
+        sync: false
 
 databases:
   # ---------------------------------------------------------------------------

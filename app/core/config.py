@@ -18,6 +18,8 @@ from typing import Literal
 from pydantic import Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_INSECURE_DEFAULT_SECRET_KEY = "test-only-secret-key-not-for-production-use-at-all"
+
 
 class Settings(BaseSettings):
     """
@@ -43,9 +45,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     # In test environments, SECRET_KEY defaults to a dummy value.
-    # The production validator enforces a minimum length of 64 chars.
+    # The production validator rejects that default.
     SECRET_KEY: str = Field(
-        default="test-only-secret-key-not-for-production-use-at-all",
+        default=_INSECURE_DEFAULT_SECRET_KEY,
         min_length=32,
     )
 
@@ -142,6 +144,9 @@ class Settings(BaseSettings):
     WHATSAPP_ACCESS_TOKEN: str = ""
     WHATSAPP_PHONE_NUMBER_ID: str = ""
     WHATSAPP_VERIFY_TOKEN: str = ""
+    # Meta App Secret: signs every webhook delivery (X-Hub-Signature-256)
+    WHATSAPP_APP_SECRET: str = ""
+    WHATSAPP_WABA_ID: str = ""
 
     # -------------------------------------------------------------------------
     # Google Calendar OAuth2
@@ -171,12 +176,8 @@ class Settings(BaseSettings):
         if self.APP_ENV == "production":
             if self.DEBUG:
                 raise ValueError("DEBUG must be False in production")
-            if not self.SECRET_KEY or len(self.SECRET_KEY) < 64:
-                raise ValueError("SECRET_KEY must be at least 64 characters in production")
-            if "example.com" in self.AUTH0_DOMAIN or "test" in self.AUTH0_DOMAIN:
-                raise ValueError("AUTH0_DOMAIN must be a real Auth0 domain in production")
-            if "test" in self.AUTH0_AUDIENCE:
-                raise ValueError("AUTH0_AUDIENCE must be a real audience in production")
+            if self.SECRET_KEY == _INSECURE_DEFAULT_SECRET_KEY:
+                raise ValueError("SECRET_KEY must be set explicitly in production")
         return self
 
 

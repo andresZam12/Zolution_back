@@ -3,6 +3,7 @@ Google Calendar integration service with automatic OAuth2 refresh_token rotation
 """
 
 from datetime import UTC, datetime, timedelta
+import re
 import uuid
 
 import httpx
@@ -11,6 +12,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.integrations.models import IntegrationCredential
+
+
+_PHONE_LINE = re.compile(r"^Teléfono / WhatsApp:\s*(.+)$", re.MULTILINE)
+
+
+class CalendarUnavailableError(Exception):
+    """Google Calendar could not be reached or rejected the request."""
+
+
+def _digits(value: str) -> str:
+    return "".join(filter(str.isdigit, str(value)))
+
+
+def _event_belongs_to_phone(event: dict, phone_digits: str) -> bool:
+    """Match the phone stored on the event, tolerating a missing country prefix."""
+    match = _PHONE_LINE.search(event.get("description") or "")
+    if not match:
+        return False
+    stored = _digits(match.group(1))
+    return stored == phone_digits or (len(stored) >= 10 and phone_digits.endswith(stored))
 
 
 class GoogleCalendarService:
@@ -215,18 +236,39 @@ class GoogleCalendarService:
             logger.warning("Error deleting event from Google Calendar: %s", exc)
             return {"success": False, "message": str(exc)}
 
-    async def find_events(self, query: str) -> list[dict]:
-        """Search events in primary Google Calendar matching query string."""
-        if not query or len(query.strip()) < 3:
+    async def find_customer_events(self, customer_phone: str) -> list[dict]:
+        """
+        Return this customer's upcoming appointments, soonest first.
+
+        Only events created by Zolution qualify: they carry the customer's phone
+        on their own description line. Names are not used to match, so another
+        customer or a personal event of the business owner can never be returned.
+
+        Raises:
+            ValueError: Google Calendar is not connected.
+            CalendarUnavailableError: Google did not answer successfully.
+        """
+        digits = _digits(customer_phone)
+        if len(digits) < 7:
             return []
-        try:
-            token = await self._get_access_token()
-            url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
-            headers = {"Authorization": f"Bearer {token}"}
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                res = await client.get(url, headers=headers, params={"q": query.strip(), "maxResults": 10})
-                if res.status_code == 200:
-                    return res.json().get("items", [])
-        except Exception:
-            pass
-        return []
+
+        token = await self._get_access_token()
+        url = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+        params = {
+            "timeMin": datetime.now(UTC).isoformat(),
+            "singleEvents": "true",
+            "orderBy": "startTime",
+            "maxResults": 250,
+        }
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            response = await client.get(
+                url, headers={"Authorization": f"Bearer {token}"}, params=params
+            )
+        if response.status_code != 200:
+            raise CalendarUnavailableError(f"Google Calendar HTTP {response.status_code}")
+
+        return [
+            event
+            for event in response.json().get("items", [])
+            if _event_belongs_to_phone(event, digits)
+        ]

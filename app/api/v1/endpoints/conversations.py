@@ -476,7 +476,7 @@ async def simulate_conversation_turn(
                 # Also search on Google Calendar directly if not in memory
                 if not cancelled_any:
                     try:
-                        evs = await cal_service.find_events(customer_name)
+                        evs = await cal_service.find_customer_events(customer_phone)
                         for ev in evs:
                             ev_id = ev.get("id")
                             if ev_id:
@@ -615,7 +615,7 @@ async def simulate_conversation_turn(
                         # Also search on Google Calendar directly if user asked for a change and not found in memory
                         if is_reschedule and not found_old_to_delete:
                             try:
-                                evs = await cal_service.find_events(customer_name)
+                                evs = await cal_service.find_customer_events(customer_phone)
                                 for ev in evs:
                                     ev_id = ev.get("id")
                                     if ev_id:

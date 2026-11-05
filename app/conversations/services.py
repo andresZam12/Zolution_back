@@ -22,6 +22,52 @@ from app.tenants.models import Organization
 
 logger = logging.getLogger(__name__)
 
+CALENDAR_FAILED_REPLY = (
+    "Recibí tu solicitud, pero no pude actualizar la agenda en este momento, así que "
+    "este cambio aún no está confirmado. Por favor intenta de nuevo en unos minutos."
+)
+NEED_DATETIME_REPLY = (
+    "Para continuar necesito la fecha y la hora exactas de tu cita. ¿Me las confirmas?"
+)
+NO_APPOINTMENT_REPLY = (
+    "No encontré una cita próxima registrada con este número. ¿Deseas agendar una nueva?"
+)
+
+_TIME_PATTERN = re.compile(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?$", re.IGNORECASE)
+
+
+def _parse_appointment_start(date_arg: str, time_arg: str, now: datetime) -> datetime | None:
+    """Parse the date and time of a command; None unless they form a future slot."""
+    time_match = _TIME_PATTERN.match(time_arg.strip())
+    if not time_match:
+        return None
+
+    hour = int(time_match.group(1))
+    minute = int(time_match.group(2) or 0)
+    meridiem = (time_match.group(3) or "").lower().replace(".", "")
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+
+    try:
+        day = datetime.strptime(date_arg.strip(), "%Y-%m-%d")
+        start = day.replace(hour=hour, minute=minute)
+    except ValueError:
+        return None
+    return start if start > now else None
+
+
+def _to_bogota_iso(moment: datetime) -> str:
+    return moment.strftime("%Y-%m-%dT%H:%M:00-05:00")
+
+
+def _event_starts_at(event: dict, start_iso: str) -> bool:
+    event_start = event.get("start", {}).get("dateTime")
+    if not event_start:
+        return False
+    return datetime.fromisoformat(event_start) == datetime.fromisoformat(start_iso)
+
 
 class ConversationService:
     """
@@ -54,25 +100,7 @@ class ConversationService:
         result = await self.db.execute(stmt)
         conversation = result.scalars().first()
 
-        # 2. If not found in this org, check if customer already had a conversation in any org to reuse
-        if not conversation:
-            stmt_any = (
-                select(Conversation)
-                .where(Conversation.customer_phone.in_(phone_variants))
-                .order_by(Conversation.created_at.desc())
-            )
-            res_any = await self.db.execute(stmt_any)
-            existing_conv = res_any.scalars().first()
-            if existing_conv:
-                existing_conv.organization_id = org_u
-                existing_conv.status = "active"
-                if customer_name and customer_name != "Cliente":
-                    existing_conv.customer_name = customer_name
-                self.db.add(existing_conv)
-                await self.db.commit()
-                conversation = existing_conv
-
-        # 3. Only if absolutely no prior conversation exists for this customer, create one
+        # 2. A conversation belongs to one tenant: never reuse another organization's thread
         if not conversation:
             conversation = Conversation(
                 id=uuid.uuid4(),
@@ -101,38 +129,23 @@ class ConversationService:
             f"Processing incoming WhatsApp message from {customer_phone} (phone_id={clean_phone_id}): '{text_content}'"
         )
 
-        # 1. Look up AgentConfig by setting tenant context on each organization
-        # (Organizations has NO RLS, so it safely discovers the tenant without RLS violation)
-        agent_config = None
-        orgs_res = await self.db.execute(select(Organization).order_by(Organization.created_at.desc()))
-        orgs = list(orgs_res.scalars().all())
-
-        for org in orgs:
-            await self.db.execute(
-                text("SELECT set_config('app.current_organization_id', :org_id, false)"),
-                {"org_id": str(org.id)},
-            )
-            stmt_cfg = select(AgentConfig).where(AgentConfig.organization_id == org.id)
-            cfg_res = await self.db.execute(stmt_cfg)
-            cfg = cfg_res.scalar_one_or_none()
-            if cfg:
-                if cfg.whatsapp_phone_number_id == clean_phone_id:
-                    agent_config = cfg
-                    break
-                elif not agent_config:
-                    agent_config = cfg
-
-        if agent_config:
-            agent_config.whatsapp_phone_number_id = clean_phone_id
-            agent_config.status = "active"
-            self.db.add(agent_config)
-            await self.db.commit()
-            logger.info(
-                f"Associated AgentConfig {agent_config.id} with WhatsApp phone_number_id {clean_phone_id}"
-            )
+        # 1. Route strictly by the receiving number. Unknown numbers are never assigned to a tenant.
+        agent_res = await self.db.execute(
+            select(AgentConfig).where(AgentConfig.whatsapp_phone_number_id == clean_phone_id)
+        )
+        agent_config = agent_res.scalar_one_or_none()
 
         if not agent_config:
-            logger.warning(f"No AgentConfig found in database to handle phone_number_id: {clean_phone_id}")
+            logger.warning(f"No AgentConfig linked to WhatsApp phone_number_id: {clean_phone_id}")
+            return
+
+        org_res = await self.db.execute(
+            select(Organization).where(Organization.id == agent_config.organization_id)
+        )
+        org = org_res.scalar_one_or_none()
+
+        if agent_config.status != "active" or not org or org.status != "active":
+            logger.info(f"Ignored WhatsApp message for inactive agent {agent_config.id}")
             return
 
         organization_id = str(agent_config.organization_id)
@@ -143,17 +156,7 @@ class ConversationService:
             {"org_id": organization_id},
         )
 
-        # Load Organization business name
-        org_name = "tu negocio"
-        try:
-            org_res = await self.db.execute(
-                select(Organization).where(Organization.id == agent_config.organization_id)
-            )
-            org = org_res.scalar_one_or_none()
-            if org and org.name:
-                org_name = org.name
-        except Exception as org_err:
-            logger.warning(f"Could not load organization name: {org_err}")
+        org_name = org.name or "tu negocio"
 
         # 2. Get or create conversation history
         effective_customer_name = (customer_name or "Cliente").strip()
@@ -175,7 +178,10 @@ class ConversationService:
         # 4. Prepare message history for LLM in natural chronological order (clean up trailing broken syntax)
         stmt_history = (
             select(Message)
-            .where(Message.conversation_id == conversation.id)
+            .where(
+                Message.conversation_id == conversation.id,
+                Message.organization_id == agent_config.organization_id,
+            )
             .order_by(Message.created_at.asc())
         )
         hist_res = await self.db.execute(stmt_history)
@@ -231,7 +237,7 @@ class ConversationService:
         # Check if customer already has a scheduled appointment in Google Calendar
         existing_appointment_info = "No hay citas previas agendadas registradas."
         try:
-            evs = await cal_service.find_events(effective_customer_name)
+            evs = await cal_service.find_customer_events(customer_phone)
             if evs:
                 active_evs = []
                 for ev in evs:
@@ -278,7 +284,7 @@ class ConversationService:
             "2. LONGITUD: Mantén respuestas ágiles de WhatsApp (de 2 a 4 oraciones bien redactadas), evitando párrafos innecesariamente largos pero NUNCA cortando oraciones ni dejando ideas a medias.\n"
             "3. CONSULTAS DE CITAS EXISTENTES: Si el cliente pregunta cuándo es su cita o pide recordarle el horario, respóndele con la información de su cita registrada en el calendario SIN emitir ningún comando ni tag.\n"
             "4. COMANDOS DE ACCIÓN (SOLO cuando el cliente solicita o confirma una fecha/hora nueva):\n"
-            f"   - Agendar nueva cita: Confirma la fecha y hora en el texto y al final pon en renglón nuevo: [[AGENDAR|{tomorrow}|HH:MM]]\n"
+            "   - Agendar nueva cita: Confirma la fecha y hora en el texto y al final pon en renglón nuevo: [[AGENDAR|YYYY-MM-DD|HH:MM]] usando la fecha real que pidió el cliente\n"
             "   - Reagendar / cambiar hora: Confirma el nuevo horario en el texto y al final pon en renglón nuevo: [[REAGENDAR|YYYY-MM-DD|HH:MM]]\n"
             "   - Cancelar: Confirma la cancelación en el texto y al final pon en renglón nuevo: [[CANCELAR]]\n"
             "   - Preguntas generales, consultas de precios o agradecimientos: Responde cordialmente SIN agregar ningún comando ni corchetes.\n"
@@ -323,104 +329,14 @@ class ConversationService:
                 raw_args = raw_args[1:].strip()
             cmd_args = [p.strip() for p in raw_args.split("|") if p.strip()]
 
-        lower_user = text_content.lower()
-        # Failsafe: if user requested scheduling and specified time, but LLM tag was missing/malformed:
-        if not command_type and any(kw in lower_user for kw in ("agendar", "cita", "reservar", "programar")):
-            time_m = re.search(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)\b", lower_user, re.IGNORECASE)
-            if time_m:
-                command_type = "AGENDAR"
-                cmd_args = [tomorrow, time_m.group(1)]
-                logger.info(f"Failsafe intent detected AGENDAR for time: {time_m.group(1)}")
-
-        hh, mm = 10, 30
-        if command_type == "CANCELAR":
-            try:
-                evs = await cal_service.find_events(effective_customer_name)
-                for ev in evs:
-                    if ev.get("id"):
-                        await cal_service.delete_appointment(ev["id"])
-                        logger.info(f"Cancelled event {ev['id']} on Google Calendar")
-                        break
-            except Exception as e:
-                logger.warning(f"Error deleting event on Google Calendar: {e}")
-
-        elif command_type in ("AGENDAR", "REAGENDAR"):
-            if command_type == "REAGENDAR":
-                try:
-                    evs = await cal_service.find_events(effective_customer_name)
-                    for ev in evs:
-                        if ev.get("id"):
-                            await cal_service.delete_appointment(ev["id"])
-                            break
-                except Exception:
-                    pass
-
-            # Extract target date
-            b_date = tomorrow
-            if len(cmd_args) > 0:
-                dm = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", cmd_args[0])
-                if dm:
-                    b_date = dm.group(1)
-
-            # Extract time string
-            raw_time_str = ""
-            if len(cmd_args) > 1:
-                raw_time_str = cmd_args[1]
-            elif len(cmd_args) == 1 and not re.search(r"^\d{4}-\d{2}-\d{2}$", cmd_args[0]):
-                raw_time_str = cmd_args[0]
-            if not raw_time_str:
-                tm = re.search(r"\b(\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?)\b", lower_user, re.IGNORECASE)
-                raw_time_str = tm.group(1) if tm else "10:30 AM"
-
-            # Parse hours & minutes accurately (handles '10:30 am', '10:30', '10am', '4pm')
-            raw_t_lower = raw_time_str.lower().strip()
-            is_pm = "pm" in raw_t_lower or "p.m." in raw_t_lower or "tarde" in raw_t_lower or "noche" in raw_t_lower
-            is_am = "am" in raw_t_lower or "a.m." in raw_t_lower
-            digits_colon = re.sub(r"[^\d:]", "", raw_t_lower)
-            if ":" in digits_colon:
-                t_parts = digits_colon.split(":")
-                hh = int(t_parts[0]) if t_parts[0].isdigit() else 10
-                mm = int(t_parts[1]) if len(t_parts) > 1 and t_parts[1].isdigit() else 0
-            elif digits_colon.isdigit():
-                hh = int(digits_colon)
-                mm = 0
-            if is_pm and hh < 12:
-                hh += 12
-            elif is_am and hh == 12:
-                hh = 0
-
-            b_name = cmd_args[2] if len(cmd_args) > 2 else effective_customer_name
-            b_service = cmd_args[3] if len(cmd_args) > 3 else "Asesoría especializada"
-
-            start_iso = f"{b_date}T{hh:02d}:{mm:02d}:00-05:00"
-            end_iso = f"{b_date}T{(hh+1):02d}:{mm:02d}:00-05:00"
-
-            # Prevent duplicate bookings for the same customer at the same slot
-            already_booked = False
-            try:
-                evs = await cal_service.find_events(b_name)
-                slot_prefix = start_iso[:16]
-                already_booked = any(
-                    ev.get("start", {}).get("dateTime", "").startswith(slot_prefix)
-                    for ev in evs
-                )
-            except Exception as ev_err:
-                logger.info(f"Could not check existing calendar events: {ev_err}")
-
-            if already_booked:
-                logger.info(f"Event for {b_name} at {start_iso[:16]} already exists in Google Calendar. Skipping duplicate creation.")
-            else:
-                try:
-                    cal_res = await cal_service.create_appointment(
-                        customer_name=b_name,
-                        customer_phone=customer_phone,
-                        start_time=start_iso,
-                        end_time=end_iso,
-                        notes=b_service,
-                    )
-                    logger.info(f"Booked appointment on Google Calendar for {b_name} at {start_iso}: {cal_res}")
-                except Exception as e:
-                    logger.warning(f"Error booking Google Calendar appointment: {e}")
+        calendar_reply, booked_start = await self._execute_calendar_command(
+            cal_service,
+            command_type,
+            cmd_args,
+            effective_customer_name,
+            customer_phone,
+            now_co,
+        )
 
         # Clean tags safely from reply_text:
         # Strip ONLY the bracketed command tags, NEVER strip surrounding conversation text
@@ -435,7 +351,8 @@ class ConversationService:
         # Fix truncated sentences ending in incomplete prepositions or punctuation
         reply_text = re.sub(r"[\s,;:-]+$", "", reply_text).strip()
         incomplete_pattern = r"\b(para mañana|mañana|a las|a|el día|para|las|el|en|confirmada para|quedó agendada para|quedó para)$"
-        if re.search(incomplete_pattern, reply_text, re.IGNORECASE):
+        if booked_start and re.search(incomplete_pattern, reply_text, re.IGNORECASE):
+            hh, mm = booked_start.hour, booked_start.minute
             hh_12 = ((hh - 1) % 12) + 1
             ampm = "PM" if hh >= 12 else "AM"
             if re.search(r"\b(a las|a)$", reply_text, re.IGNORECASE):
@@ -444,6 +361,10 @@ class ConversationService:
                 reply_text = f"{reply_text} a las {hh_12}:{mm:02d} {ampm}."
         elif reply_text and not reply_text.endswith((".", "!", "?")):
             reply_text = reply_text + "."
+
+        # The customer is only told about what actually happened on the calendar
+        if calendar_reply:
+            reply_text = calendar_reply
 
         # 8. Save assistant response to DB
         assistant_message = Message(
@@ -467,6 +388,77 @@ class ConversationService:
             logger.info(f"WhatsApp reply successfully sent to {customer_phone}")
         except Exception as e:
             logger.error(f"Failed to send WhatsApp message to {customer_phone}: {e}")
+
+    async def _execute_calendar_command(
+        self,
+        cal_service: GoogleCalendarService,
+        command_type: str | None,
+        cmd_args: list[str],
+        customer_name: str,
+        customer_phone: str,
+        now: datetime,
+    ) -> tuple[str | None, datetime | None]:
+        """
+        Run a calendar command before anything is promised to the customer.
+
+        Returns (reply override, booked start). The override is None when the
+        model's reply is accurate, otherwise it replaces that reply.
+        """
+        if not command_type:
+            return None, None
+
+        start = None
+        if command_type in ("AGENDAR", "REAGENDAR"):
+            start = _parse_appointment_start(
+                cmd_args[0] if cmd_args else "",
+                cmd_args[1] if len(cmd_args) > 1 else "",
+                now,
+            )
+            if not start:
+                logger.info(f"Calendar command {command_type} without a valid date/time: {cmd_args}")
+                return NEED_DATETIME_REPLY, None
+
+        try:
+            events = await cal_service.find_customer_events(customer_phone)
+
+            if command_type == "CANCELAR":
+                if not events:
+                    return NO_APPOINTMENT_REPLY, None
+                result = await cal_service.delete_appointment(events[0]["id"])
+                if not result.get("success"):
+                    logger.error(f"Could not cancel event {events[0]['id']}: {result}")
+                    return CALENDAR_FAILED_REPLY, None
+                return None, None
+
+            if command_type == "REAGENDAR" and not events:
+                return NO_APPOINTMENT_REPLY, None
+
+            start_iso = _to_bogota_iso(start)
+            if any(_event_starts_at(ev, start_iso) for ev in events):
+                logger.info(f"Customer already has an event at {start_iso}; nothing to create")
+                return None, start
+
+            created = await cal_service.create_appointment(
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+                start_time=start_iso,
+                end_time=_to_bogota_iso(start + timedelta(hours=1)),
+                notes=cmd_args[3] if len(cmd_args) > 3 else "Asesoría especializada",
+            )
+            if not created.get("success"):
+                logger.error(f"Could not create calendar event: {created.get('message')}")
+                return CALENDAR_FAILED_REPLY, None
+
+            # The previous slot is released only once the new one exists
+            if command_type == "REAGENDAR":
+                removed = await cal_service.delete_appointment(events[0]["id"])
+                if not removed.get("success"):
+                    logger.error(f"Rescheduled but old event remains {events[0]['id']}: {removed}")
+
+            return None, start
+        except Exception as exc:
+            logger.error(f"Calendar command {command_type} failed: {exc}")
+            return CALENDAR_FAILED_REPLY, None
 
     async def list_conversations(
         self, organization_id: str | uuid.UUID, page: int = 1, page_size: int = 20

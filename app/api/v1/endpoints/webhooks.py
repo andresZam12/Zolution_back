@@ -2,15 +2,18 @@
 WhatsApp webhooks API endpoints.
 """
 
+import hashlib
+import hmac
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from pydantic import ValidationError
 
+from app.auth.dependencies import require_superadmin
+from app.auth.models import UserContext
 from app.conversations.services import ConversationService
 from app.core.config import get_settings
-from app.core.database import get_superadmin_db_session
 from app.integrations.whatsapp.schemas import WhatsAppWebhookPayload
 
 router = APIRouter()
@@ -20,27 +23,29 @@ logger = logging.getLogger(__name__)
 _PROCESSED_MESSAGE_IDS: set[str] = set()
 
 
-@router.get("/whatsapp/subscribe")
+def _has_valid_signature(raw_body: bytes, signature_header: str, app_secret: str) -> bool:
+    """Check Meta's X-Hub-Signature-256 header against the exact request bytes."""
+    expected = "sha256=" + hmac.new(app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected.encode(), signature_header.encode())
+
+
 @router.post("/whatsapp/subscribe")
-async def subscribe_whatsapp_waba():
+async def subscribe_whatsapp_waba(_user: UserContext = Depends(require_superadmin)):
     """
-    Calls Meta Graph API to subscribe WABA and Phone to the webhook.
+    Calls Meta Graph API to subscribe the WABA to this app's webhook.
     This registers the app so Meta forwards incoming WhatsApp messages to our callback URL.
     """
     import httpx
     settings = get_settings()
-    token = (settings.WHATSAPP_API_TOKEN or "").strip()
-    if not token:
-        return {"error": "WHATSAPP_API_TOKEN is empty in environment"}
+    token = (settings.WHATSAPP_API_TOKEN or settings.WHATSAPP_ACCESS_TOKEN or "").strip()
+    waba_id = settings.WHATSAPP_WABA_ID.strip()
+    if not token or not waba_id:
+        raise HTTPException(
+            status_code=503,
+            detail="WHATSAPP_API_TOKEN and WHATSAPP_WABA_ID must be configured.",
+        )
 
-    waba_id = "2329447784520377"
-    phone_id = (settings.WHATSAPP_PHONE_NUMBER_ID or "1402283359640718").strip()
-
-    results: dict = {
-        "waba_id": waba_id,
-        "phone_id": phone_id,
-        "token_prefix": token[:15] + "...",
-    }
+    results: dict = {"waba_id": waba_id}
 
     async with httpx.AsyncClient() as client:
         # 1. Subscribe WABA
@@ -90,25 +95,21 @@ async def verify_whatsapp_webhook(
     if not hub_mode or not hub_verify_token:
         raise HTTPException(status_code=400, detail="Missing parameters")
 
-    expected_token = settings.WHATSAPP_VERIFY_TOKEN or "zolution_webhook_secret_2026"
+    expected_token = settings.WHATSAPP_VERIFY_TOKEN
+    token_matches = bool(expected_token) and hmac.compare_digest(
+        hub_verify_token.encode(), expected_token.encode()
+    )
 
-    if hub_mode == "subscribe" and (
-        hub_verify_token == expected_token or hub_verify_token == "zolution_webhook_secret_2026"
-    ):
-        logger.info("WhatsApp webhook verified successfully with challenge: %s", hub_challenge)
+    if hub_mode == "subscribe" and token_matches:
+        logger.info("WhatsApp webhook verified successfully")
         return PlainTextResponse(content=str(hub_challenge), status_code=200)
-    else:
-        logger.warning(
-            "WhatsApp webhook verification failed: received '%s', expected '%s'",
-            hub_verify_token,
-            expected_token,
-        )
-        raise HTTPException(status_code=403, detail="Verification failed")
+
+    logger.warning("WhatsApp webhook verification failed")
+    raise HTTPException(status_code=403, detail="Verification failed")
 
 
 @router.post("/whatsapp")
 async def receive_whatsapp_webhook(
-    payload: WhatsAppWebhookPayload,
     background_tasks: BackgroundTasks,
     request: Request,
 ):
@@ -117,11 +118,25 @@ async def receive_whatsapp_webhook(
     Meta requires this endpoint to return a 200 OK immediately, so we process
     the actual message asynchronously in a background task.
     """
+    settings = get_settings()
+    if not settings.WHATSAPP_APP_SECRET:
+        logger.error("Rejected WhatsApp webhook: WHATSAPP_APP_SECRET is not configured")
+        raise HTTPException(status_code=503, detail="Webhook signature validation is not configured")
+
+    raw_body = await request.body()
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    if not _has_valid_signature(raw_body, signature, settings.WHATSAPP_APP_SECRET):
+        logger.warning("Rejected WhatsApp webhook with a missing or invalid signature")
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    try:
+        payload = WhatsAppWebhookPayload.model_validate_json(raw_body)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="Invalid webhook payload") from exc
+
     if payload.object != "whatsapp_business_account":
         logger.warning(f"Unrecognized WhatsApp webhook object: {payload.object}")
         raise HTTPException(status_code=404, detail="Unrecognized object")
-
-    settings = get_settings()
 
     for entry in payload.entry:
         for change in entry.changes:
@@ -155,11 +170,11 @@ async def receive_whatsapp_webhook(
                 logger.info(f"Ignored non-text WhatsApp message type: {message.type}")
                 continue
 
-            phone_number_id = (
-                value.metadata.get("phone_number_id")
-                or settings.WHATSAPP_PHONE_NUMBER_ID
-                or "1402283359640718"
-            )
+            phone_number_id = value.metadata.get("phone_number_id")
+            if not phone_number_id:
+                logger.warning("Ignored WhatsApp message without phone_number_id metadata")
+                continue
+
             customer_name = (contact.profile.name if (contact and contact.profile) else None) or "Cliente WhatsApp"
             customer_phone = message.from_
             text_body = message.text.body

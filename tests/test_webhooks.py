@@ -1,19 +1,88 @@
-import pytest
-from httpx import AsyncClient
+import hashlib
+import hmac
+import json
 
-from app.core.config import get_settings
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.api.v1.endpoints import webhooks
+from app.core.config import Settings, get_settings
 from app.main import app
+
+APP_SECRET = "test-app-secret"
+WEBHOOK_URL = "/api/v1/webhooks/whatsapp"
+
+
+def _client() -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+def _sign(body: bytes, secret: str = APP_SECRET) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def _message_body(message_id: str) -> bytes:
+    return json.dumps(
+        {
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "id": "12345",
+                    "changes": [
+                        {
+                            "field": "messages",
+                            "value": {
+                                "messaging_product": "whatsapp",
+                                "metadata": {
+                                    "display_phone_number": "123456789",
+                                    "phone_number_id": "phone-id-123",
+                                },
+                                "contacts": [
+                                    {"profile": {"name": "John Doe"}, "wa_id": "19876543210"}
+                                ],
+                                "messages": [
+                                    {
+                                        "from": "19876543210",
+                                        "id": message_id,
+                                        "timestamp": "1609459200",
+                                        "type": "text",
+                                        "text": {"body": "Hello Zolution"},
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    ).encode()
+
+
+@pytest.fixture
+def whatsapp_settings(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "WHATSAPP_VERIFY_TOKEN", "test-verify-token")
+    monkeypatch.setattr(settings, "WHATSAPP_APP_SECRET", APP_SECRET)
+    return settings
+
+
+@pytest.fixture
+def queued_messages(monkeypatch):
+    calls: list[dict] = []
+
+    async def record(**kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(webhooks, "process_message_background_task", record)
+    webhooks._PROCESSED_MESSAGE_IDS.clear()
+    return calls
 
 
 @pytest.mark.asyncio
-async def test_verify_webhook_success():
-    """Test the Meta GET webhook verification challenge."""
-    settings = get_settings()
-    settings.WHATSAPP_VERIFY_TOKEN = "test-verify-token"
-
-    async with AsyncClient(app=app, base_url="http://test") as client:
+async def test_verify_webhook_success(whatsapp_settings):
+    async with _client() as client:
         response = await client.get(
-            "/api/v1/webhooks/whatsapp",
+            WEBHOOK_URL,
             params={
                 "hub.mode": "subscribe",
                 "hub.verify_token": "test-verify-token",
@@ -22,65 +91,117 @@ async def test_verify_webhook_success():
         )
 
     assert response.status_code == 200
-    assert response.json() == 11223344
+    assert response.text == "11223344"
 
 
 @pytest.mark.asyncio
-async def test_verify_webhook_forbidden():
-    """Test verification with invalid token."""
-    settings = get_settings()
-    settings.WHATSAPP_VERIFY_TOKEN = "test-verify-token"
-
-    async with AsyncClient(app=app, base_url="http://test") as client:
+@pytest.mark.parametrize("token", ["wrong-token", "zolution_webhook_secret_2026"])
+async def test_verify_webhook_rejects_other_tokens(whatsapp_settings, token):
+    async with _client() as client:
         response = await client.get(
-            "/api/v1/webhooks/whatsapp",
-            params={
-                "hub.mode": "subscribe",
-                "hub.verify_token": "wrong-token",
-                "hub.challenge": "11223344",
-            },
+            WEBHOOK_URL,
+            params={"hub.mode": "subscribe", "hub.verify_token": token, "hub.challenge": "1"},
         )
 
     assert response.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_receive_webhook_text_message():
-    """Test receiving a valid text message payload."""
-    payload = {
-        "object": "whatsapp_business_account",
-        "entry": [
-            {
-                "id": "12345",
-                "changes": [
-                    {
-                        "field": "messages",
-                        "value": {
-                            "messaging_product": "whatsapp",
-                            "metadata": {
-                                "display_phone_number": "123456789",
-                                "phone_number_id": "phone-id-123",
-                            },
-                            "contacts": [{"profile": {"name": "John Doe"}, "wa_id": "19876543210"}],
-                            "messages": [
-                                {
-                                    "from": "19876543210",
-                                    "id": "msg-id-123",
-                                    "timestamp": "1609459200",
-                                    "type": "text",
-                                    "text": {"body": "Hello Zolution"},
-                                }
-                            ],
-                        },
-                    }
-                ],
-            }
-        ],
-    }
+async def test_verify_webhook_fails_closed_without_configured_token(whatsapp_settings, monkeypatch):
+    monkeypatch.setattr(whatsapp_settings, "WHATSAPP_VERIFY_TOKEN", "")
 
-    async with AsyncClient(app=app, base_url="http://test") as client:
-        response = await client.post("/api/v1/webhooks/whatsapp", json=payload)
+    async with _client() as client:
+        response = await client.get(
+            WEBHOOK_URL,
+            params={"hub.mode": "subscribe", "hub.verify_token": "anything", "hub.challenge": "1"},
+        )
 
-    # The endpoint should return 200 immediately
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_signed_message_is_queued(whatsapp_settings, queued_messages):
+    body = _message_body("signed-1")
+
+    async with _client() as client:
+        response = await client.post(
+            WEBHOOK_URL, content=body, headers={"X-Hub-Signature-256": _sign(body)}
+        )
+
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+    assert queued_messages == [
+        {
+            "phone_number_id": "phone-id-123",
+            "customer_phone": "19876543210",
+            "text_content": "Hello Zolution",
+            "customer_name": "John Doe",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"X-Hub-Signature-256": "sha256=deadbeef"},
+        {"X-Hub-Signature-256": "not-a-signature"},
+    ],
+)
+async def test_unsigned_or_forged_message_is_rejected(whatsapp_settings, queued_messages, headers):
+    async with _client() as client:
+        response = await client.post(WEBHOOK_URL, content=_message_body("forged"), headers=headers)
+
+    assert response.status_code == 403
+    assert queued_messages == []
+
+
+@pytest.mark.asyncio
+async def test_signature_from_another_secret_is_rejected(whatsapp_settings, queued_messages):
+    body = _message_body("other-secret")
+
+    async with _client() as client:
+        response = await client.post(
+            WEBHOOK_URL, content=body, headers={"X-Hub-Signature-256": _sign(body, "other")}
+        )
+
+    assert response.status_code == 403
+    assert queued_messages == []
+
+
+@pytest.mark.asyncio
+async def test_webhook_fails_closed_without_app_secret(
+    whatsapp_settings, queued_messages, monkeypatch
+):
+    monkeypatch.setattr(whatsapp_settings, "WHATSAPP_APP_SECRET", "")
+    body = _message_body("no-secret")
+
+    async with _client() as client:
+        response = await client.post(
+            WEBHOOK_URL, content=body, headers={"X-Hub-Signature-256": _sign(body, "")}
+        )
+
+    assert response.status_code == 503
+    assert queued_messages == []
+
+
+@pytest.mark.asyncio
+async def test_subscribe_requires_authentication():
+    async with _client() as client:
+        anonymous = await client.post(f"{WEBHOOK_URL}/subscribe")
+        via_get = await client.get(f"{WEBHOOK_URL}/subscribe")
+
+    assert anonymous.status_code in (401, 403)
+    assert via_get.status_code == 405
+
+
+def test_production_rejects_default_secret_key():
+    with pytest.raises(ValueError, match="SECRET_KEY"):
+        Settings(_env_file=None, APP_ENV="production")
+
+
+def test_production_accepts_explicit_secret_key():
+    settings = Settings(_env_file=None, APP_ENV="production", SECRET_KEY="k" * 44)
+
+    assert settings.APP_ENV == "production"
