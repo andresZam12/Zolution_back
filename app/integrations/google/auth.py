@@ -3,7 +3,7 @@ Google Workspace OAuth2 authentication flow.
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Optional
+from typing import ClassVar, Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -15,14 +15,14 @@ class GoogleOAuthService:
     """Handles Google OAuth2 authorization and token exchange."""
 
     # Standard login scopes: non-sensitive, no verification required, can be published immediately to everyone
-    LOGIN_SCOPES = [
+    LOGIN_SCOPES: ClassVar[list[str]] = [
         "openid",
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
     ]
 
     # Full integration scopes for Calendar and Sheets (connected optionally in Integrations page)
-    INTEGRATION_SCOPES = [
+    INTEGRATION_SCOPES: ClassVar[list[str]] = [
         "openid",
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
@@ -38,7 +38,9 @@ class GoogleOAuthService:
         self.redirect_uri = self.settings.GOOGLE_REDIRECT_URI
         self.scopes = scopes or self.LOGIN_SCOPES
 
-    def get_authorization_url(self, organization_id: str, redirect_uri: Optional[str] = None) -> str:
+    def get_authorization_url(
+        self, organization_id: str, redirect_uri: Optional[str] = None
+    ) -> str:
         """
         Generate the URL to redirect the user to Google for consent.
         We pass the organization_id in the 'state' parameter to map the callback

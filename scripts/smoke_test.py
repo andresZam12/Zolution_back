@@ -10,7 +10,7 @@ Usage:
 """
 
 import argparse
-import sys
+
 import httpx
 
 TEST_TENANTS = [
@@ -23,9 +23,9 @@ TEST_TENANTS = [
 
 def run_smoke_tests(base_url: str):
     """Execute smoke tests against Zolution backend."""
-    print(f"\n==========================================")
+    print("\n==========================================")
     print(f"🚀 Running Zolution Smoke Tests on {base_url}")
-    print(f"==========================================\n")
+    print("==========================================\n")
 
     client = httpx.Client(base_url=base_url, timeout=10.0)
     failed = 0
@@ -48,7 +48,9 @@ def run_smoke_tests(base_url: str):
         if resp.status_code == 200:
             data = resp.json()
             title = data.get("info", {}).get("title", "Unknown")
-            print(f"✅ [PASS] GET /openapi.json -> API Title: '{title}', Routes: {len(data.get('paths', {}))}")
+            print(
+                f"✅ [PASS] GET /openapi.json -> API Title: '{title}', Routes: {len(data.get('paths', {}))}"
+            )
         else:
             print(f"❌ [FAIL] GET /openapi.json returned {resp.status_code}")
             failed += 1
@@ -64,7 +66,9 @@ def run_smoke_tests(base_url: str):
         }
         try:
             resp = client.get("/api/v1/conversations", headers=headers)
-            print(f"ℹ️ Tenant '{tenant['name']}' ({tenant['slug']}) -> GET /api/v1/conversations: HTTP {resp.status_code}")
+            print(
+                f"[info] Tenant '{tenant['name']}' ({tenant['slug']}) -> GET /api/v1/conversations: HTTP {resp.status_code}"
+            )
         except Exception as e:
             print(f"⚠️ Tenant '{tenant['slug']}' request error: {e}")
 

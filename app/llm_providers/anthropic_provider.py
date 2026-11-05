@@ -80,7 +80,7 @@ class AnthropicProvider(LLMProvider):
 
             api_key = os.getenv("ANTHROPIC_API_KEY", "")
 
-        api_key = api_key.strip().strip('"\'')
+        api_key = api_key.strip().strip("\"'")
 
         if not api_key:
             raise LLMProviderNotConfiguredError(
@@ -90,7 +90,7 @@ class AnthropicProvider(LLMProvider):
 
         import os
 
-        workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip().strip('"\'')
+        workspace_id = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip().strip("\"'")
         headers = {"anthropic-workspace-id": workspace_id} if workspace_id else None
 
         self._client = anthropic.AsyncAnthropic(api_key=api_key, default_headers=headers)
@@ -189,7 +189,9 @@ class AnthropicProvider(LLMProvider):
         except anthropic.APIError as exc:
             # If latest haiku not found, fallback to claude-3-haiku-20240307
             if "not_found" in str(exc).lower() and self._model != CLAUDE_3_HAIKU_FALLBACK:
-                logger.info("Claude %s not found; falling back to %s", self._model, CLAUDE_3_HAIKU_FALLBACK)
+                logger.info(
+                    "Claude %s not found; falling back to %s", self._model, CLAUDE_3_HAIKU_FALLBACK
+                )
                 try:
                     response = await self._client.messages.create(
                         model=CLAUDE_3_HAIKU_FALLBACK,
@@ -210,7 +212,8 @@ class AnthropicProvider(LLMProvider):
 
         # Extract reply text safely
         text_blocks = [
-            getattr(block, "text", "") for block in response.content
+            getattr(block, "text", "")
+            for block in response.content
             if getattr(block, "type", "") == "text" and hasattr(block, "text")
         ]
         reply_content = "".join(text_blocks).strip()

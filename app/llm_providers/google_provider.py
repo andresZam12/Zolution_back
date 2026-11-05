@@ -78,7 +78,7 @@ class GoogleProvider(LLMProvider):
 
             api_key = os.getenv("GOOGLE_API_KEY", "")
 
-        api_key = api_key.strip().strip('"\'')
+        api_key = api_key.strip().strip("\"'")
 
         if not api_key:
             raise LLMProviderNotConfiguredError(
@@ -148,7 +148,7 @@ class GoogleProvider(LLMProvider):
     @staticmethod
     def _map_exception(exc: Exception, provider: str) -> LLMProviderError:
         """Map Google API exceptions to domain exceptions."""
-        if isinstance(exc, (DeadlineExceeded, TimeoutError, asyncio.TimeoutError)):
+        if isinstance(exc, DeadlineExceeded | TimeoutError | asyncio.TimeoutError):
             return LLMProviderTimeoutError(f"Google Gemini timed out: {exc}", provider=provider)
         if isinstance(exc, PermissionDenied):
             return LLMProviderAuthError(str(exc), provider=provider, status_code=403)
@@ -183,7 +183,9 @@ class GoogleProvider(LLMProvider):
         except Exception as exc:
             # If primary model failed, retry with alternative model
             alt_model = GEMINI_1_5_FLASH if "latest" in self._model_name else GEMINI_FLASH_LATEST
-            logger.info("Gemini %s issue (%s); falling back to %s", self._model_name, exc, alt_model)
+            logger.info(
+                "Gemini %s issue (%s); falling back to %s", self._model_name, exc, alt_model
+            )
             try:
                 fallback_model = self._get_model(system_prompt, temperature, max_tokens, alt_model)
                 response = await asyncio.wait_for(
@@ -197,20 +199,31 @@ class GoogleProvider(LLMProvider):
         # Handle content extraction safely
         reply_text = ""
         try:
-            if response and response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+            if (
+                response
+                and response.candidates
+                and response.candidates[0].content
+                and response.candidates[0].content.parts
+            ):
                 part_texts = [
-                    getattr(p, "text", "") for p in response.candidates[0].content.parts
+                    getattr(p, "text", "")
+                    for p in response.candidates[0].content.parts
                     if getattr(p, "text", None) and not getattr(p, "thought", False)
                 ]
                 reply_text = "".join(part_texts).strip()
             if not reply_text and hasattr(response, "text"):
                 reply_text = (response.text or "").strip()
-            
+
             # Clean any internal thinking or scratchpad leakage (e.g. "* no tool calls...")
             if reply_text:
                 import re
-                reply_text = re.sub(r"^\s*[\*\-]\s*no tool calls[^\n]*\n*", "", reply_text, flags=re.IGNORECASE)
-                reply_text = re.sub(r"^\s*[\*\-]\s*thought[^\n]*\n*", "", reply_text, flags=re.IGNORECASE)
+
+                reply_text = re.sub(
+                    r"^\s*[\*\-]\s*no tool calls[^\n]*\n*", "", reply_text, flags=re.IGNORECASE
+                )
+                reply_text = re.sub(
+                    r"^\s*[\*\-]\s*thought[^\n]*\n*", "", reply_text, flags=re.IGNORECASE
+                )
                 reply_text = reply_text.strip()
         except Exception:
             try:

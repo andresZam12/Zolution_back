@@ -27,6 +27,7 @@ UNSUPPORTED_MESSAGE_REPLY = (
     "Por ahora solo puedo leer mensajes de texto. ¿Me escribes lo que necesitas, por favor?"
 )
 
+
 class ConversationService:
     """
     Orchestrates the conversation loop:
@@ -42,7 +43,11 @@ class ConversationService:
         self, organization_id: str | uuid.UUID, customer_phone: str, customer_name: str | None
     ) -> Conversation:
         """Fetch the latest conversation for a customer in this organization, or create a new one."""
-        org_u = uuid.UUID(str(organization_id)) if not isinstance(organization_id, uuid.UUID) else organization_id
+        org_u = (
+            uuid.UUID(str(organization_id))
+            if not isinstance(organization_id, uuid.UUID)
+            else organization_id
+        )
         clean_phone = "".join(filter(str.isdigit, str(customer_phone)))
         phone_variants = [customer_phone, clean_phone, f"+{clean_phone}"]
 
@@ -119,7 +124,9 @@ class ConversationService:
             return False
         return True
 
-    async def _deliver(self, phone_number_id: str, customer_phone: str, reply: str, conversation_id) -> bool:
+    async def _deliver(
+        self, phone_number_id: str, customer_phone: str, reply: str, conversation_id
+    ) -> bool:
         logger.info(f"Sending WhatsApp reply in conversation {conversation_id}")
         try:
             await self.whatsapp_client.send_text_message(
@@ -224,7 +231,9 @@ class ConversationService:
             )
         )
         await self.db.commit()
-        await self._deliver(clean_phone_id, customer_phone, UNSUPPORTED_MESSAGE_REPLY, conversation.id)
+        await self._deliver(
+            clean_phone_id, customer_phone, UNSUPPORTED_MESSAGE_REPLY, conversation.id
+        )
 
     async def list_conversations(
         self, organization_id: str | uuid.UUID, page: int = 1, page_size: int = 20
@@ -234,7 +243,11 @@ class ConversationService:
         """
         from sqlalchemy import func
 
-        org_u = uuid.UUID(str(organization_id)) if not isinstance(organization_id, uuid.UUID) else organization_id
+        org_u = (
+            uuid.UUID(str(organization_id))
+            if not isinstance(organization_id, uuid.UUID)
+            else organization_id
+        )
         offset = (page - 1) * page_size
 
         # Count total
@@ -264,8 +277,16 @@ class ConversationService:
         """
         Retrieve a specific conversation with all its messages.
         """
-        org_u = uuid.UUID(str(organization_id)) if not isinstance(organization_id, uuid.UUID) else organization_id
-        conv_u = uuid.UUID(str(conversation_id)) if not isinstance(conversation_id, uuid.UUID) else conversation_id
+        org_u = (
+            uuid.UUID(str(organization_id))
+            if not isinstance(organization_id, uuid.UUID)
+            else organization_id
+        )
+        conv_u = (
+            uuid.UUID(str(conversation_id))
+            if not isinstance(conversation_id, uuid.UUID)
+            else conversation_id
+        )
         stmt = (
             select(Conversation)
             .where(

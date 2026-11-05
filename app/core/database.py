@@ -16,8 +16,8 @@ Usage:
         ...
 """
 
-from collections.abc import AsyncGenerator
 import uuid
+from collections.abc import AsyncGenerator
 
 from fastapi import Request
 from sqlalchemy import Connection, event, select, text

@@ -4,9 +4,9 @@ Dashboard and simulator appointment tests. Requires TEST_DATABASE_URL (see conft
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
-import re
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -40,7 +40,11 @@ def api(sessions, monkeypatch):
 async def _add_tenant(sessions, name: str) -> uuid.UUID:
     organization_id = uuid.uuid4()
     async with sessions() as db:
-        db.add(Organization(id=organization_id, name=name, slug=name.lower(), plan="starter", status="active"))
+        db.add(
+            Organization(
+                id=organization_id, name=name, slug=name.lower(), plan="starter", status="active"
+            )
+        )
         await db.flush()
         await bind_tenant(db, organization_id)
         db.add(
@@ -126,11 +130,19 @@ async def test_status_changes_follow_the_agenda_rules(sessions, api):
 
     async with api as client:
         first = (await client.post(URL, json=_payload(), headers=headers)).json()["appointment"]
-        completed = await client.patch(f"{URL}/{first['id']}/status", json={"status": "completed"}, headers=headers)
-        invalid = await client.patch(f"{URL}/{first['id']}/status", json={"status": "lost"}, headers=headers)
-        cancelled = await client.patch(f"{URL}/{first['id']}/status", json={"status": "cancelled"}, headers=headers)
+        completed = await client.patch(
+            f"{URL}/{first['id']}/status", json={"status": "completed"}, headers=headers
+        )
+        invalid = await client.patch(
+            f"{URL}/{first['id']}/status", json={"status": "lost"}, headers=headers
+        )
+        cancelled = await client.patch(
+            f"{URL}/{first['id']}/status", json={"status": "cancelled"}, headers=headers
+        )
         replacement = await client.post(URL, json=_payload(phone="573111111111"), headers=headers)
-        reactivated = await client.patch(f"{URL}/{first['id']}/status", json={"status": "confirmed"}, headers=headers)
+        reactivated = await client.patch(
+            f"{URL}/{first['id']}/status", json={"status": "confirmed"}, headers=headers
+        )
 
     assert completed.json()["status"] == "completed"
     assert invalid.status_code == 422
@@ -161,7 +173,9 @@ async def test_another_tenants_appointment_cannot_be_touched(sessions, api):
     org_b = await _add_tenant(sessions, "NegocioB")
 
     async with api as client:
-        theirs = (await client.post(URL, json=_payload(), headers=_headers(org_b))).json()["appointment"]
+        theirs = (await client.post(URL, json=_payload(), headers=_headers(org_b))).json()[
+            "appointment"
+        ]
         listing = await client.get(URL, headers=_headers(org_a))
         changed = await client.patch(
             f"{URL}/{theirs['id']}/status", json={"status": "cancelled"}, headers=_headers(org_a)
@@ -196,7 +210,9 @@ async def test_availability_without_google_reports_the_agenda(sessions, api):
 
     async with api as client:
         await client.post(URL, json=_payload(), headers=headers)
-        response = await client.get(f"{URL}/availability", params={"date": NEXT_WEEK}, headers=headers)
+        response = await client.get(
+            f"{URL}/availability", params={"date": NEXT_WEEK}, headers=headers
+        )
 
     assert response.json()["google_connected"] is False
     assert "10:00 AM - 10:45 AM (Ana)" in response.json()["availability"]
@@ -262,7 +278,10 @@ def test_legacy_appointment_times_are_understood(date_text, time_text, start_hou
     assert end - start == timedelta(minutes=minutes)
 
 
-@pytest.mark.parametrize(("date_text", "time_text"), [("", "10:00"), ("mañana", "10:00"), ("2026-11-20", ""), ("2026-11-20", "25:00")])
+@pytest.mark.parametrize(
+    ("date_text", "time_text"),
+    [("", "10:00"), ("mañana", "10:00"), ("2026-11-20", ""), ("2026-11-20", "25:00")],
+)
 def test_unreadable_legacy_appointments_are_skipped(date_text, time_text):
     assert _migration()._legacy_window(date_text, time_text) is None
 
@@ -271,7 +290,10 @@ def _migration():
     from importlib.util import module_from_spec, spec_from_file_location
     from pathlib import Path
 
-    path = Path(__file__).resolve().parents[1] / "alembic/versions/20240110_000000_create_appointments.py"
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/20240110_000000_create_appointments.py"
+    )
     spec = spec_from_file_location("create_appointments", path)
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -280,7 +302,13 @@ def _migration():
 
 @pytest.mark.parametrize(
     ("hour", "minute", "expected"),
-    [(0, 5, "12:05 AM"), (9, 0, "9:00 AM"), (12, 0, "12:00 PM"), (15, 30, "3:30 PM"), (23, 59, "11:59 PM")],
+    [
+        (0, 5, "12:05 AM"),
+        (9, 0, "9:00 AM"),
+        (12, 0, "12:00 PM"),
+        (15, 30, "3:30 PM"),
+        (23, 59, "11:59 PM"),
+    ],
 )
 def test_times_are_shown_in_12_hour_format(hour, minute, expected):
     assert format_time_12h(datetime(2026, 11, 20, hour, minute, tzinfo=BOGOTA)) == expected
@@ -290,7 +318,9 @@ def test_times_are_shown_in_colombian_local_time():
     assert format_time_12h(datetime(2026, 11, 20, 20, 0, tzinfo=UTC)) == "3:00 PM"
 
 
-async def _add_reply(sessions, organization_id: uuid.UUID, resolved: bool | None, ms: int | None, days_ago: int = 0):
+async def _add_reply(
+    sessions, organization_id: uuid.UUID, resolved: bool | None, ms: int | None, days_ago: int = 0
+):
     created_at = datetime.now(UTC) - timedelta(days=days_ago)
     async with sessions() as db:
         await bind_tenant(db, organization_id)
@@ -442,8 +472,13 @@ async def test_google_tokens_are_encrypted_in_the_database(sessions):
         await bind_tenant(db, organization_id)
         credential = (await db.execute(select(IntegrationCredential))).scalar_one()
         raw = (
-            await db.execute(text("SELECT access_token, refresh_token FROM integration_credentials"))
+            await db.execute(
+                text("SELECT access_token, refresh_token FROM integration_credentials")
+            )
         ).one()
 
-    assert (credential.access_token, credential.refresh_token) == ("secret-access", "secret-refresh")
+    assert (credential.access_token, credential.refresh_token) == (
+        "secret-access",
+        "secret-refresh",
+    )
     assert all(value.startswith("enc:v1:") and "secret" not in value for value in raw)

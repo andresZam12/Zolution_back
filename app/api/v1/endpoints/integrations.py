@@ -39,7 +39,9 @@ async def authorize_google(
     Generate the Google OAuth2 authorization URL with Calendar & Sheets scopes.
     The frontend redirects the user to this URL.
     """
-    organization_id = str(user.organization_id or getattr(request.state, "organization_id", "") or "")
+    organization_id = str(
+        user.organization_id or getattr(request.state, "organization_id", "") or ""
+    )
     if not organization_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -170,9 +172,7 @@ async def get_integrations_status(
 
     await bind_tenant(db, org_uuid)
 
-    stmt = select(IntegrationCredential).where(
-        IntegrationCredential.organization_id == org_uuid
-    )
+    stmt = select(IntegrationCredential).where(IntegrationCredential.organization_id == org_uuid)
     result = await db.execute(stmt)
     credentials = result.scalars().all()
 

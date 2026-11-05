@@ -147,15 +147,11 @@ class AppointmentService:
         self.calendar = calendar
 
     async def list_all(self) -> list[Appointment]:
-        result = await self.db.execute(
-            select(Appointment).order_by(Appointment.starts_at.desc())
-        )
+        result = await self.db.execute(select(Appointment).order_by(Appointment.starts_at.desc()))
         return list(result.scalars().all())
 
     async def get(self, appointment_id: uuid.UUID) -> Appointment | None:
-        result = await self.db.execute(
-            select(Appointment).where(Appointment.id == appointment_id)
-        )
+        result = await self.db.execute(select(Appointment).where(Appointment.id == appointment_id))
         return result.scalar_one_or_none()
 
     async def upcoming_for_customer(self, customer_phone: str) -> list[Appointment]:
@@ -358,7 +354,9 @@ class AppointmentService:
                 now,
             )
             if not local_start:
-                logger.info(f"Calendar command {command_type} without a valid date/time: {cmd_args}")
+                logger.info(
+                    f"Calendar command {command_type} without a valid date/time: {cmd_args}"
+                )
                 return CommandResult(reply_override=NEED_DATETIME_REPLY)
             start = local_start.replace(tzinfo=BOGOTA)
 

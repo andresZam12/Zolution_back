@@ -25,6 +25,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 from app.admin import models as _admin_models  # noqa: F401
 from app.agents import models as _agent_models  # noqa: F401
+from app.appointments import models as _appointment_models  # noqa: F401
+from app.conversations import models as _conversation_models  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Import application Base and Settings
@@ -40,8 +42,6 @@ from app.integrations import models as _integration_models  # noqa: F401
 # Add new model modules here as they are created.
 # fmt: off
 from app.tenants import models as _tenant_models  # noqa: F401
-from app.appointments import models as _appointment_models  # noqa: F401
-from app.conversations import models as _conversation_models  # noqa: F401
 
 # fmt: on
 

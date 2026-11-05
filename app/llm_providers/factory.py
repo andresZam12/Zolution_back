@@ -12,6 +12,7 @@ This enables:
 """
 
 import logging
+import os
 
 from app.core.config import get_settings
 from app.llm_providers.base import LLMProvider
@@ -22,8 +23,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Provider registry
 # Registry maps provider name -> (adapter class, api_key_getter)
-import os
-
 # Lazy imports inside the tuples to avoid loading all SDKs at startup
 # ---------------------------------------------------------------------------
 
@@ -32,7 +31,9 @@ def _get_anthropic_provider(model: str = "", *, enable_caching: bool = True) -> 
     from app.llm_providers.anthropic_provider import AnthropicProvider
 
     settings = get_settings()
-    api_key = (settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")).strip().strip('"\'')
+    api_key = (
+        (settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY", "")).strip().strip("\"'")
+    )
     effective_model = model or AnthropicProvider.DEFAULT_MODEL
 
     if not api_key:
@@ -47,7 +48,7 @@ def _get_google_provider(model: str = "") -> LLMProvider:
     from app.llm_providers.google_provider import GoogleProvider
 
     settings = get_settings()
-    api_key = (settings.GOOGLE_API_KEY or os.environ.get("GOOGLE_API_KEY", "")).strip().strip('"\'')
+    api_key = (settings.GOOGLE_API_KEY or os.environ.get("GOOGLE_API_KEY", "")).strip().strip("\"'")
     effective_model = model or GoogleProvider.DEFAULT_MODEL
 
     if not api_key:
@@ -62,7 +63,7 @@ def _get_openai_provider(model: str = "") -> LLMProvider:
     from app.llm_providers.openai_provider import OpenAIProvider
 
     settings = get_settings()
-    api_key = (settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY", "")).strip().strip('"\'')
+    api_key = (settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY", "")).strip().strip("\"'")
     effective_model = model or OpenAIProvider.DEFAULT_MODEL
 
     if not api_key:
@@ -168,4 +169,3 @@ class LLMProviderFactory:
     ) -> LLMProvider:
         """Return a configured LLMProvider instance."""
         return get_llm_provider(provider_name, model=model, enable_caching=enable_caching)
-

@@ -159,11 +159,11 @@ def _extract_user_context(payload: dict[str, Any]) -> UserContext:
         email: str = payload.get("email", "")
         role_str: str = payload.get(f"{namespace}/role") or payload.get("role", "owner")
         user_id_str: str = (
-            payload.get(f"{namespace}/user_id")
-            or payload.get("user_id")
-            or payload.get("sub", "")
+            payload.get(f"{namespace}/user_id") or payload.get("user_id") or payload.get("sub", "")
         )
-        org_id_str: str | None = payload.get(f"{namespace}/org_id") or payload.get("organization_id")
+        org_id_str: str | None = payload.get(f"{namespace}/org_id") or payload.get(
+            "organization_id"
+        )
 
         role = UserRole(role_str)
         user_id = UUID(user_id_str)
@@ -229,6 +229,7 @@ async def require_superadmin(
 
 def require_role(*allowed_roles: UserRole):
     """FastAPI dependency factory — require one of the specified roles."""
+
     async def dependency(user: UserContext = Depends(get_current_user)) -> UserContext:
         if user.role not in allowed_roles and not user.is_superadmin:
             raise HTTPException(
@@ -236,11 +237,14 @@ def require_role(*allowed_roles: UserRole):
                 detail="Insufficient permissions for this action.",
             )
         return user
+
     return dependency
 
 
 def require_permission(permission: str):
     """FastAPI dependency factory — check permission."""
+
     async def dependency(user: UserContext = Depends(get_current_user)) -> UserContext:
         return user
+
     return dependency

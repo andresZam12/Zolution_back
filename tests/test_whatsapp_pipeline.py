@@ -36,8 +36,8 @@ from app.appointments.services import (
     strip_command_tags,
 )
 from app.conversations import services
-from app.conversations.models import Conversation, Message
 from app.conversations.agent import MODEL_UNAVAILABLE_REPLY, NO_CATALOG_TEXT
+from app.conversations.models import Conversation, Message
 from app.conversations.services import UNSUPPORTED_MESSAGE_REPLY, ConversationService
 from app.core.database import bind_tenant
 from app.integrations import models as _integration_models  # noqa: F401
@@ -133,7 +133,11 @@ def fakes(monkeypatch):
 async def _add_tenant(sessions, name: str, phone_id: str | None, status: str = "active"):
     organization_id = uuid.uuid4()
     async with sessions() as db:
-        db.add(Organization(id=organization_id, name=name, slug=name.lower(), plan="starter", status="active"))
+        db.add(
+            Organization(
+                id=organization_id, name=name, slug=name.lower(), plan="starter", status="active"
+            )
+        )
         await db.flush()
         await bind_tenant(db, organization_id)
         db.add(
@@ -266,10 +270,22 @@ async def test_messages_of_a_previously_moved_thread_stay_hidden(sessions):
     conversation_id = uuid.uuid4()
     async with sessions() as db:
         await bind_tenant(db, org_b)
-        db.add(Conversation(id=conversation_id, organization_id=org_b, customer_phone=CUSTOMER, status="active"))
+        db.add(
+            Conversation(
+                id=conversation_id, organization_id=org_b, customer_phone=CUSTOMER, status="active"
+            )
+        )
         await db.commit()
         await bind_tenant(db, org_a)
-        db.add(Message(id=uuid.uuid4(), conversation_id=conversation_id, organization_id=org_a, role="user", content="secreto para A"))
+        db.add(
+            Message(
+                id=uuid.uuid4(),
+                conversation_id=conversation_id,
+                organization_id=org_a,
+                role="user",
+                content="secreto para A",
+            )
+        )
         await db.commit()
 
     await _incoming(sessions, "222", "hola B")
@@ -309,7 +325,9 @@ async def test_booking_is_stored_and_mirrored_before_confirming(sessions):
     assert FakeCalendar.created[0]["end_time"] == f"{NEXT_WEEK}T11:00:00-05:00"
     assert FakeWhatsApp.sent == ["Listo, quedó agendada."]
     stored = await _appointments(sessions, organization_id)
-    assert [(a.source, a.status, a.google_event_id) for a in stored] == [("whatsapp", "confirmed", "event-1")]
+    assert [(a.source, a.status, a.google_event_id) for a in stored] == [
+        ("whatsapp", "confirmed", "event-1")
+    ]
 
 
 @requires_postgres
@@ -340,7 +358,13 @@ async def test_failed_booking_is_never_confirmed_nor_kept(sessions, setup):
 @requires_postgres
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "tag", ["[[AGENDAR]]", f"[[AGENDAR|{NEXT_WEEK}]]", "[[AGENDAR|2020-01-01|10:00]]", f"[[AGENDAR|{NEXT_WEEK}|25:00]]"]
+    "tag",
+    [
+        "[[AGENDAR]]",
+        f"[[AGENDAR|{NEXT_WEEK}]]",
+        "[[AGENDAR|2020-01-01|10:00]]",
+        f"[[AGENDAR|{NEXT_WEEK}|25:00]]",
+    ],
 )
 async def test_booking_needs_a_valid_future_slot(sessions, tag):
     await _add_tenant(sessions, "Negocio", "111")
@@ -427,11 +451,14 @@ async def test_simultaneous_requests_get_exactly_one_booking(sessions):
 
     # Several rounds: the deadlock this guards against only appeared intermittently
     for hour in (8, 10, 12, 14, 16):
+
         async def request_slot(phone: str, start: int = hour):
             async with sessions() as db:
                 await bind_tenant(db, organization_id)
                 service = AppointmentService(db, organization_id, FakeCalendar(db, organization_id))
-                result = await service.book("Ana", phone, _at(start), _at(start + 1), "Consulta", "whatsapp")
+                result = await service.book(
+                    "Ana", phone, _at(start), _at(start + 1), "Consulta", "whatsapp"
+                )
                 return result.outcome
 
         outcomes = await asyncio.gather(*(request_slot(f"57300000000{i}") for i in range(5)))
@@ -592,7 +619,13 @@ async def test_panel_appointment_is_found_despite_phone_formatting(sessions):
 
 @pytest.mark.parametrize(
     ("time_arg", "expected"),
-    [("14:30", (14, 30)), ("2:30 pm", (14, 30)), ("10am", (10, 0)), ("12 am", (0, 0)), ("12:15 p.m.", (12, 15))],
+    [
+        ("14:30", (14, 30)),
+        ("2:30 pm", (14, 30)),
+        ("10am", (10, 0)),
+        ("12 am", (0, 0)),
+        ("12:15 p.m.", (12, 15)),
+    ],
 )
 def test_parse_appointment_start_reads_times(time_arg, expected):
     start = parse_appointment_start("2026-11-20", time_arg, datetime(2026, 11, 4))
@@ -602,7 +635,13 @@ def test_parse_appointment_start_reads_times(time_arg, expected):
 
 @pytest.mark.parametrize(
     ("date_arg", "time_arg"),
-    [("", ""), ("mañana", "10:00"), ("2026-13-40", "10:00"), ("2026-11-20", "24:00"), ("2026-11-03", "10:00")],
+    [
+        ("", ""),
+        ("mañana", "10:00"),
+        ("2026-13-40", "10:00"),
+        ("2026-11-20", "24:00"),
+        ("2026-11-03", "10:00"),
+    ],
 )
 def test_parse_appointment_start_rejects_invalid_slots(date_arg, time_arg):
     assert parse_appointment_start(date_arg, time_arg, datetime(2026, 11, 4)) is None
@@ -657,7 +696,9 @@ async def test_busy_intervals_reads_the_requested_window(monkeypatch):
     )
 
     assert seen["timeMin"] == "2026-11-20T10:00:00-05:00"
-    assert busy == [(datetime(2026, 11, 20, 10, tzinfo=BOGOTA), datetime(2026, 11, 20, 11, tzinfo=BOGOTA))]
+    assert busy == [
+        (datetime(2026, 11, 20, 10, tzinfo=BOGOTA), datetime(2026, 11, 20, 11, tzinfo=BOGOTA))
+    ]
 
 
 @pytest.mark.asyncio
@@ -714,7 +755,9 @@ async def test_agent_is_told_to_use_12_hour_format(sessions):
 async def _last_reply(sessions, organization_id: uuid.UUID) -> Message:
     async with sessions() as db:
         await bind_tenant(db, organization_id)
-        return (await db.execute(select(Message).where(Message.role == "assistant"))).scalars().one()
+        return (
+            (await db.execute(select(Message).where(Message.role == "assistant"))).scalars().one()
+        )
 
 
 @requires_postgres
@@ -844,7 +887,11 @@ async def test_audio_gets_a_clear_answer_without_calling_the_model(sessions):
     assert FakeLLM.prompts == []
     async with sessions() as db:
         await bind_tenant(db, organization_id)
-        contents = (await db.execute(select(Message.content).order_by(Message.role.desc()))).scalars().all()
+        contents = (
+            (await db.execute(select(Message.content).order_by(Message.role.desc())))
+            .scalars()
+            .all()
+        )
     assert contents == ["[audio]", UNSUPPORTED_MESSAGE_REPLY]
 
 

@@ -104,7 +104,9 @@ def _copy_legacy_appointments() -> None:
                     "starts_at": window[0],
                     "ends_at": window[1],
                     "status": status if status in ("confirmed", "completed") else "cancelled",
-                    "event_id": None if event_id.startswith(("pg_", "local_")) else event_id or None,
+                    "event_id": None
+                    if event_id.startswith(("pg_", "local_"))
+                    else event_id or None,
                     "link": item.get("htmlLink"),
                 },
             )
@@ -120,7 +122,9 @@ def upgrade() -> None:
 
     op.create_table(
         "appointments",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+        sa.Column(
+            "id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")
+        ),
         sa.Column(
             "organization_id",
             UUID(as_uuid=True),
@@ -136,8 +140,12 @@ def upgrade() -> None:
         sa.Column("source", sa.String(50), nullable=False),
         sa.Column("google_event_id", sa.String(255), nullable=True),
         sa.Column("html_link", sa.String(1024), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
         sa.CheckConstraint("ends_at > starts_at", name="appointments_valid_range"),
     )
     op.create_index("ix_appointments_organization_id", "appointments", ["organization_id"])

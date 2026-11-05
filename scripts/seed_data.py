@@ -13,15 +13,14 @@ Usage:
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import get_settings
-from app.core.database import AsyncSessionFactory, Base, engine
-from app.tenants.models import Organization, User
+from sqlalchemy import select, text
+
 from app.agents.models import AgentConfig
 from app.conversations.models import Conversation, Message
+from app.core.config import get_settings
+from app.core.database import AsyncSessionFactory
+from app.tenants.models import Organization, User
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -61,10 +60,19 @@ DEMO_TENANTS = [
             "customer_name": "Dr. Fernando Gómez",
             "customer_phone": "+573105556677",
             "messages": [
-                {"role": "user", "content": "Hola, buenas tardes. Requiero agendar una asesoría para revisar un contrato de fusión empresarial."},
-                {"role": "assistant", "content": "Buenas tardes, Dr. Gómez. Con gusto le asisto. Contamos con consultas especializadas en derecho corporativo y revisión de contratos de 1 hora. ¿Para qué fecha u horario le convendría la sesión?"},
+                {
+                    "role": "user",
+                    "content": "Hola, buenas tardes. Requiero agendar una asesoría para revisar un contrato de fusión empresarial.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Buenas tardes, Dr. Gómez. Con gusto le asisto. Contamos con consultas especializadas en derecho corporativo y revisión de contratos de 1 hora. ¿Para qué fecha u horario le convendría la sesión?",
+                },
                 {"role": "user", "content": "¿Tienen disponibilidad este viernes a las 10:00 AM?"},
-                {"role": "assistant", "content": "Permítame validar la agenda de nuestro equipo corporativo para este viernes a las 10:00 AM... Perfecto, tenemos ese espacio disponible. ¿Desea que reserve la cita a su nombre?"},
+                {
+                    "role": "assistant",
+                    "content": "Permítame validar la agenda de nuestro equipo corporativo para este viernes a las 10:00 AM... Perfecto, tenemos ese espacio disponible. ¿Desea que reserve la cita a su nombre?",
+                },
             ],
         },
     },
@@ -100,10 +108,19 @@ DEMO_TENANTS = [
             "customer_name": "Laura Méndez (Fintech Co)",
             "customer_phone": "+573128889900",
             "messages": [
-                {"role": "user", "content": "Hola NexTech, estamos evaluando migrar nuestra infraestructura a Kubernetes y queremos asesoría."},
-                {"role": "assistant", "content": "¡Hola Laura! Excelente iniciativa. Nuestras sesiones de arquitectura Cloud y DevSecOps ayudan a dimensionar clústeres y optimizar costos. Podemos coordinar un discovery técnico de 45 mins. ¿Qué día les funciona mejor?"},
+                {
+                    "role": "user",
+                    "content": "Hola NexTech, estamos evaluando migrar nuestra infraestructura a Kubernetes y queremos asesoría.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "¡Hola Laura! Excelente iniciativa. Nuestras sesiones de arquitectura Cloud y DevSecOps ayudan a dimensionar clústeres y optimizar costos. Podemos coordinar un discovery técnico de 45 mins. ¿Qué día les funciona mejor?",
+                },
                 {"role": "user", "content": "Mañana en la tarde después de las 3:00 PM."},
-                {"role": "assistant", "content": "Consultando disponibilidad... Tenemos las 3:30 PM o las 4:30 PM de mañana disponibles con nuestro arquitecto cloud. ¿Cuál prefieres?"},
+                {
+                    "role": "assistant",
+                    "content": "Consultando disponibilidad... Tenemos las 3:30 PM o las 4:30 PM de mañana disponibles con nuestro arquitecto cloud. ¿Cuál prefieres?",
+                },
             ],
         },
     },
@@ -138,10 +155,19 @@ DEMO_TENANTS = [
             "customer_name": "Carlos Rodríguez",
             "customer_phone": "+573151112233",
             "messages": [
-                {"role": "user", "content": "Buenas tardes, quisiera consultar el costo de una limpieza y agendar para el sábado."},
-                {"role": "assistant", "content": "¡Hola Carlos! Un gusto saludarte. La limpieza ultrasónica profunda tiene un valor de $120.000 COP e incluye remoción de sarro y pulido dental. ¿Prefieres el sábado en la mañana o en la tarde?"},
+                {
+                    "role": "user",
+                    "content": "Buenas tardes, quisiera consultar el costo de una limpieza y agendar para el sábado.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "¡Hola Carlos! Un gusto saludarte. La limpieza ultrasónica profunda tiene un valor de $120.000 COP e incluye remoción de sarro y pulido dental. ¿Prefieres el sábado en la mañana o en la tarde?",
+                },
                 {"role": "user", "content": "En la mañana tipo 10:00 AM estaría genial."},
-                {"role": "assistant", "content": "Revisando agenda del sábado... El cupo de las 10:00 AM está libre con la Dra. García. ¿Confirmo tu cita con tu número de teléfono?"},
+                {
+                    "role": "assistant",
+                    "content": "Revisando agenda del sábado... El cupo de las 10:00 AM está libre con la Dra. García. ¿Confirmo tu cita con tu número de teléfono?",
+                },
             ],
         },
     },
@@ -176,10 +202,19 @@ DEMO_TENANTS = [
             "customer_name": "Mariana Vélez",
             "customer_phone": "+573187778899",
             "messages": [
-                {"role": "user", "content": "Hola! Quiero regalarle un día de spa a mi mamá por su cumpleaños."},
-                {"role": "assistant", "content": "¡Qué hermoso detalle, Mariana! Para ocasiones especiales recomendamos nuestro 'Ritual Renovador' que combina masaje relajante de 60 mins con hidroterapia. ¿Para qué fecha te gustaría reservarlo?"},
+                {
+                    "role": "user",
+                    "content": "Hola! Quiero regalarle un día de spa a mi mamá por su cumpleaños.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "¡Qué hermoso detalle, Mariana! Para ocasiones especiales recomendamos nuestro 'Ritual Renovador' que combina masaje relajante de 60 mins con hidroterapia. ¿Para qué fecha te gustaría reservarlo?",
+                },
                 {"role": "user", "content": "Para este domingo a las 11:00 AM."},
-                {"role": "assistant", "content": "Verificando cabinas para este domingo a las 11:00 AM... ¡Tenemos una cabina suite libre! ¿A qué nombre completo programamos la reserva?"},
+                {
+                    "role": "assistant",
+                    "content": "Verificando cabinas para este domingo a las 11:00 AM... ¡Tenemos una cabina suite libre! ¿A qué nombre completo programamos la reserva?",
+                },
             ],
         },
     },
@@ -203,7 +238,9 @@ async def seed():
                 org = result.scalar_one_or_none()
 
                 if not org:
-                    logger.info(f"Creating organization: {tenant_data['name']} ({tenant_data['slug']})")
+                    logger.info(
+                        f"Creating organization: {tenant_data['name']} ({tenant_data['slug']})"
+                    )
                     org = Organization(
                         id=uuid.uuid4(),
                         name=tenant_data["name"],
@@ -283,7 +320,9 @@ async def seed():
                 conv = conv_res.scalar_one_or_none()
 
                 if not conv:
-                    logger.info(f"Creating sample conversation for customer: {chat_data['customer_name']}")
+                    logger.info(
+                        f"Creating sample conversation for customer: {chat_data['customer_name']}"
+                    )
                     conv = Conversation(
                         id=uuid.uuid4(),
                         organization_id=org.id,
@@ -319,4 +358,3 @@ if __name__ == "__main__":
         asyncio.run(seed())
     except Exception as e:
         logger.warning(f"Seeding completed with notice: {e}")
-

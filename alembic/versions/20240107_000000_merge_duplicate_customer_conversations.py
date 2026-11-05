@@ -22,7 +22,7 @@ def upgrade() -> None:
             rec RECORD;
             master_id UUID;
         BEGIN
-            FOR rec IN 
+            FOR rec IN
                 SELECT regexp_replace(customer_phone, '\\D', '', 'g') AS clean_phone, organization_id
                 FROM conversations
                 GROUP BY regexp_replace(customer_phone, '\\D', '', 'g'), organization_id
@@ -31,7 +31,7 @@ def upgrade() -> None:
                 -- Get the master conversation (first created)
                 SELECT id INTO master_id
                 FROM conversations
-                WHERE regexp_replace(customer_phone, '\\D', '', 'g') = rec.clean_phone 
+                WHERE regexp_replace(customer_phone, '\\D', '', 'g') = rec.clean_phone
                   AND organization_id = rec.organization_id
                 ORDER BY created_at ASC
                 LIMIT 1;
@@ -41,14 +41,14 @@ def upgrade() -> None:
                 SET conversation_id = master_id
                 WHERE conversation_id IN (
                     SELECT id FROM conversations
-                    WHERE regexp_replace(customer_phone, '\\D', '', 'g') = rec.clean_phone 
+                    WHERE regexp_replace(customer_phone, '\\D', '', 'g') = rec.clean_phone
                       AND organization_id = rec.organization_id
                       AND id != master_id
                 );
 
                 -- Delete the duplicate conversation rows
                 DELETE FROM conversations
-                WHERE regexp_replace(customer_phone, '\\D', '', 'g') = rec.clean_phone 
+                WHERE regexp_replace(customer_phone, '\\D', '', 'g') = rec.clean_phone
                   AND organization_id = rec.organization_id
                   AND id != master_id;
             END LOOP;

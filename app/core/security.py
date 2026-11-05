@@ -51,7 +51,7 @@ def hash_otp_code(email: str, code: str) -> str:
     Only this hash is persisted, so a DB leak never exposes usable codes.
     """
     settings = get_settings()
-    message = f"{email.strip().lower()}:{code.strip()}".encode("utf-8")
+    message = f"{email.strip().lower()}:{code.strip()}".encode()
     return hmac.new(settings.SECRET_KEY.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
@@ -83,7 +83,9 @@ def create_access_token(
     if "user_id" in to_encode and f"{namespace}/user_id" not in to_encode:
         to_encode[f"{namespace}/user_id"] = str(to_encode["user_id"])
     if "organization_id" in to_encode and f"{namespace}/org_id" not in to_encode:
-        to_encode[f"{namespace}/org_id"] = str(to_encode["organization_id"]) if to_encode["organization_id"] else None
+        to_encode[f"{namespace}/org_id"] = (
+            str(to_encode["organization_id"]) if to_encode["organization_id"] else None
+        )
     if "role" in to_encode and f"{namespace}/role" not in to_encode:
         to_encode[f"{namespace}/role"] = str(to_encode["role"])
 

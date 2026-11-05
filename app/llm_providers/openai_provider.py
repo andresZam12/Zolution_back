@@ -58,7 +58,7 @@ class OpenAIProvider(LLMProvider):
 
             api_key = os.getenv("OPENAI_API_KEY", "")
 
-        api_key = api_key.strip().strip('"\'')
+        api_key = api_key.strip().strip("\"'")
 
         if not api_key:
             raise LLMProviderNotConfiguredError(

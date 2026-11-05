@@ -39,13 +39,23 @@ async def _empty_jwks() -> dict:
     return {"keys": []}
 
 
-TENANT_TABLES = ["agent_configs", "appointments", "conversations", "messages", "integration_credentials"]
+TENANT_TABLES = [
+    "agent_configs",
+    "appointments",
+    "conversations",
+    "messages",
+    "integration_credentials",
+]
 
 
 async def _add_tenant(sessions, name: str, phone_id: str | None = None) -> uuid.UUID:
     organization_id = uuid.uuid4()
     async with sessions() as db:
-        db.add(Organization(id=organization_id, name=name, slug=name.lower(), plan="starter", status="active"))
+        db.add(
+            Organization(
+                id=organization_id, name=name, slug=name.lower(), plan="starter", status="active"
+            )
+        )
         await db.flush()
         await bind_tenant(db, organization_id)
         db.add(
@@ -67,9 +77,24 @@ async def _add_conversation(sessions, organization_id: uuid.UUID, phone: str) ->
     conversation_id = uuid.uuid4()
     async with sessions() as db:
         await bind_tenant(db, organization_id)
-        db.add(Conversation(id=conversation_id, organization_id=organization_id, customer_phone=phone, status="active"))
+        db.add(
+            Conversation(
+                id=conversation_id,
+                organization_id=organization_id,
+                customer_phone=phone,
+                status="active",
+            )
+        )
         await db.flush()
-        db.add(Message(id=uuid.uuid4(), conversation_id=conversation_id, organization_id=organization_id, role="user", content="hola"))
+        db.add(
+            Message(
+                id=uuid.uuid4(),
+                conversation_id=conversation_id,
+                organization_id=organization_id,
+                role="user",
+                content="hola",
+            )
+        )
         await db.commit()
     return conversation_id
 
@@ -124,7 +149,9 @@ async def test_rls_is_forced_for_the_application_role(sessions):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", [AgentConfig, Appointment, Conversation, Message, IntegrationCredential])
+@pytest.mark.parametrize(
+    "model", [AgentConfig, Appointment, Conversation, Message, IntegrationCredential]
+)
 async def test_session_without_tenant_sees_nothing(sessions, model):
     organization_id = await _add_tenant(sessions, "NegocioA", "111")
     await _add_conversation(sessions, organization_id, "573000000001")
@@ -177,7 +204,14 @@ async def test_tenant_cannot_insert_for_another_organization(sessions):
 
     async with sessions() as db:
         await bind_tenant(db, org_a)
-        db.add(Conversation(id=uuid.uuid4(), organization_id=org_b, customer_phone="573000000001", status="active"))
+        db.add(
+            Conversation(
+                id=uuid.uuid4(),
+                organization_id=org_b,
+                customer_phone="573000000001",
+                status="active",
+            )
+        )
         with pytest.raises(DBAPIError, match="row-level security"):
             await db.flush()
 
@@ -208,7 +242,9 @@ async def test_reused_connection_keeps_no_tenant_and_raises_no_error(sessions):
         await db.commit()
 
     async with pooled() as db:
-        tenant = await db.execute(text("SELECT current_setting('app.current_organization_id', true)"))
+        tenant = await db.execute(
+            text("SELECT current_setting('app.current_organization_id', true)")
+        )
         assert tenant.scalar() in (None, "")
         assert (await db.execute(select(AgentConfig))).scalars().all() == []
 
@@ -293,7 +329,9 @@ async def test_calendar_credentials_stay_inside_their_tenant(sessions):
     org_b = await _add_tenant(sessions, "NegocioB")
     async with sessions() as db:
         await bind_tenant(db, org_a)
-        db.add(IntegrationCredential(organization_id=org_a, provider="google", access_token="token-a"))
+        db.add(
+            IntegrationCredential(organization_id=org_a, provider="google", access_token="token-a")
+        )
         await db.commit()
 
     async with sessions() as db:
@@ -324,7 +362,14 @@ async def test_organization_header_cannot_select_another_tenant(sessions, api):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "path", ["/agents/me", "/agents/me/status", "/appointments", "/integrations/status", "/organizations/me"]
+    "path",
+    [
+        "/agents/me",
+        "/agents/me/status",
+        "/appointments",
+        "/integrations/status",
+        "/organizations/me",
+    ],
 )
 async def test_dashboard_reads_work_under_rls(sessions, api, path):
     organization_id = await _add_tenant(sessions, "NegocioA")
@@ -369,7 +414,12 @@ async def test_registration_and_login_work_under_rls(sessions, api):
     async with api as client:
         registered = await client.post(
             "/api/v1/auth/verify-code",
-            json={"email": email, "code": "123456", "company_name": "Negocio Nuevo", "password": "secreto123"},
+            json={
+                "email": email,
+                "code": "123456",
+                "company_name": "Negocio Nuevo",
+                "password": "secreto123",
+            },
         )
         logged_in = await client.post(
             "/api/v1/auth/login", json={"email": email, "password": "secreto123"}

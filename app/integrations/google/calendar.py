@@ -51,10 +51,7 @@ class GoogleCalendarService:
             raise ValueError("Google Calendar no está conectado para esta organización.")
 
         now = datetime.now(UTC)
-        is_expired = (
-            cred.expires_at is not None
-            and cred.expires_at <= (now + timedelta(minutes=2))
-        )
+        is_expired = cred.expires_at is not None and cred.expires_at <= (now + timedelta(minutes=2))
 
         if is_expired and cred.refresh_token:
             settings = get_settings()
@@ -132,7 +129,12 @@ class GoogleCalendarService:
             return "Consulta de agenda no disponible temporalmente."
 
     async def create_appointment(
-        self, customer_name: str, customer_phone: str, start_time: str, end_time: str, notes: str = ""
+        self,
+        customer_name: str,
+        customer_phone: str,
+        start_time: str,
+        end_time: str,
+        notes: str = "",
     ) -> dict:
         """
         Create a new event in the primary Google Calendar and return event metadata.
@@ -163,6 +165,7 @@ class GoogleCalendarService:
         }
 
         import logging
+
         logger = logging.getLogger(__name__)
 
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -177,7 +180,9 @@ class GoogleCalendarService:
                     "html_link": event.get("htmlLink", ""),
                     "message": f"Appointment successfully scheduled! Calendar Link: {event.get('htmlLink')}",
                 }
-            logger.error("Google Calendar failed [HTTP %d]: %s", response.status_code, response.text)
+            logger.error(
+                "Google Calendar failed [HTTP %d]: %s", response.status_code, response.text
+            )
             return {
                 "success": False,
                 "event_id": "",
@@ -204,6 +209,7 @@ class GoogleCalendarService:
         }
 
         import logging
+
         logger = logging.getLogger(__name__)
 
         try:
@@ -212,8 +218,15 @@ class GoogleCalendarService:
                 if response.status_code in (200, 204, 404, 410):
                     logger.info("Google Calendar event deleted successfully: %s", event_id)
                     return {"success": True, "message": "Event deleted from Google Calendar"}
-                logger.error("Failed to delete Google Calendar event [HTTP %d]: %s", response.status_code, response.text)
-                return {"success": False, "message": f"Google Calendar HTTP {response.status_code}: {response.text}"}
+                logger.error(
+                    "Failed to delete Google Calendar event [HTTP %d]: %s",
+                    response.status_code,
+                    response.text,
+                )
+                return {
+                    "success": False,
+                    "message": f"Google Calendar HTTP {response.status_code}: {response.text}",
+                }
         except Exception as exc:
             logger.warning("Error deleting event from Google Calendar: %s", exc)
             return {"success": False, "message": str(exc)}

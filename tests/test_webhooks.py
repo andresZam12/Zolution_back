@@ -220,12 +220,16 @@ async def test_api_schema_is_public_only_outside_production(monkeypatch, environ
     assert response.status_code == status
 
 
-async def test_message_content_and_phones_are_not_logged(whatsapp_settings, queued_messages, caplog):
+async def test_message_content_and_phones_are_not_logged(
+    whatsapp_settings, queued_messages, caplog
+):
     body = _message_body("logged-1")
 
     with caplog.at_level("INFO"):
         async with _client() as client:
-            await client.post(WEBHOOK_URL, content=body, headers={"X-Hub-Signature-256": _sign(body)})
+            await client.post(
+                WEBHOOK_URL, content=body, headers={"X-Hub-Signature-256": _sign(body)}
+            )
 
     assert "Hello Zolution" not in caplog.text
     assert "19876543210" not in caplog.text
@@ -244,7 +248,13 @@ async def test_demo_data_is_never_seeded_in_production(monkeypatch):
 
 async def test_every_message_in_a_batch_is_processed(whatsapp_settings, queued_messages):
     batch = [
-        {"from": "1", "id": f"batch-{i}", "timestamp": "1", "type": "text", "text": {"body": f"m{i}"}}
+        {
+            "from": "1",
+            "id": f"batch-{i}",
+            "timestamp": "1",
+            "type": "text",
+            "text": {"body": f"m{i}"},
+        }
         for i in range(3)
     ]
     body = _message_body("", batch)

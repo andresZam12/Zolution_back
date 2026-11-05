@@ -91,7 +91,6 @@ async def register_organization(
     return OrganizationResponse.model_validate(org)
 
 
-
 # ---------------------------------------------------------------------------
 # Owner / Staff endpoints
 # ---------------------------------------------------------------------------

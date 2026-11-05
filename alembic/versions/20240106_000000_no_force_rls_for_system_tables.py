@@ -25,4 +25,3 @@ def upgrade() -> None:
 def downgrade() -> None:
     for table in ["agent_configs", "conversations", "messages", "integration_credentials"]:
         op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
-

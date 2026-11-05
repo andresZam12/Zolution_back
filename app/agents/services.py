@@ -151,7 +151,14 @@ class AgentConfigService:
             dumped["agentName"] = agent_name
 
         existing_answers = dict(config.onboarding_answers or {})
-        existing_answers.update({k: v for k, v in dumped.items() if v is not None or k in ("business_name", "business_type", "services", "hours", "agent_name")})
+        existing_answers.update(
+            {
+                k: v
+                for k, v in dumped.items()
+                if v is not None
+                or k in ("business_name", "business_type", "services", "hours", "agent_name")
+            }
+        )
         config.onboarding_answers = existing_answers
 
         if dumped.get("system_prompt_generated"):
@@ -210,6 +217,7 @@ class AgentConfigService:
                 merged["business_type"] = merged["industry"]
             config.onboarding_answers = merged
             from sqlalchemy.orm.attributes import flag_modified
+
             flag_modified(config, "onboarding_answers")
 
         new_org_name = data.company_name or (
@@ -344,43 +352,117 @@ class AgentConfigService:
                 "agent_name": "Sofía",
                 "tone": "Cálido, empático y profesional",
                 "services": [
-                    {"name": "Valoración Odontológica y Diagnóstico", "price_cop": 30000, "duration_minutes": 30, "description": "Examen clínico completo y plan de tratamiento"},
-                    {"name": "Limpieza Dental Profunda (Profilaxis)", "price_cop": 80000, "duration_minutes": 45, "description": "Eliminación de sarro, placa y pulido dental"},
-                    {"name": "Control o Ajuste de Ortodoncia", "price_cop": 55000, "duration_minutes": 30, "description": "Revisión mensual de brackets y cambio de arcos"},
-                    {"name": "Calza o Restauración en Resina", "price_cop": 90000, "duration_minutes": 45, "description": "Tratamiento estético de caries por pieza dental"},
-                    {"name": "Blanqueamiento Dental LED", "price_cop": 280000, "duration_minutes": 60, "description": "Aclaramiento dental seguro en consultorio"},
+                    {
+                        "name": "Valoración Odontológica y Diagnóstico",
+                        "price_cop": 30000,
+                        "duration_minutes": 30,
+                        "description": "Examen clínico completo y plan de tratamiento",
+                    },
+                    {
+                        "name": "Limpieza Dental Profunda (Profilaxis)",
+                        "price_cop": 80000,
+                        "duration_minutes": 45,
+                        "description": "Eliminación de sarro, placa y pulido dental",
+                    },
+                    {
+                        "name": "Control o Ajuste de Ortodoncia",
+                        "price_cop": 55000,
+                        "duration_minutes": 30,
+                        "description": "Revisión mensual de brackets y cambio de arcos",
+                    },
+                    {
+                        "name": "Calza o Restauración en Resina",
+                        "price_cop": 90000,
+                        "duration_minutes": 45,
+                        "description": "Tratamiento estético de caries por pieza dental",
+                    },
+                    {
+                        "name": "Blanqueamiento Dental LED",
+                        "price_cop": 280000,
+                        "duration_minutes": 60,
+                        "description": "Aclaramiento dental seguro en consultorio",
+                    },
                 ],
                 "schedule_weekdays": "Lunes a Viernes: 8:00 AM - 6:00 PM",
                 "schedule_saturdays": "Sábados: 8:00 AM - 1:00 PM",
                 "holiday_policy": "Festivos: Solo urgencias o cerrado",
                 "cancellation_policy": "Avisar cancelación o cambio con mínimo 2 horas de anticipación",
                 "tolerance_minutes": 10,
-                "payment_methods": ["Nequi / Daviplata", "Transferencia Bancolombia", "Tarjetas débito/crédito", "Efectivo"],
+                "payment_methods": [
+                    "Nequi / Daviplata",
+                    "Transferencia Bancolombia",
+                    "Tarjetas débito/crédito",
+                    "Efectivo",
+                ],
                 "faqs": [
-                    {"question": "¿Aceptan seguros o medicina prepagada?", "answer": "Atendemos de forma particular y expedimos facturas para reembolso según tu plan de medicina prepagada."},
-                    {"question": "¿Qué pasa si llego tarde?", "answer": "Tenemos una tolerancia de 10 minutos; pasado ese tiempo reprogramamos tu cita para no afectar la atención del siguiente paciente."}
+                    {
+                        "question": "¿Aceptan seguros o medicina prepagada?",
+                        "answer": "Atendemos de forma particular y expedimos facturas para reembolso según tu plan de medicina prepagada.",
+                    },
+                    {
+                        "question": "¿Qué pasa si llego tarde?",
+                        "answer": "Tenemos una tolerancia de 10 minutos; pasado ese tiempo reprogramamos tu cita para no afectar la atención del siguiente paciente.",
+                    },
                 ],
             }
-        elif any(k in ind for k in ("spa", "belleza", "barber", "peluquer", "estétic", "uñas", "masaje")):
+        elif any(
+            k in ind for k in ("spa", "belleza", "barber", "peluquer", "estétic", "uñas", "masaje")
+        ):
             return {
                 "agent_name": "Camila",
                 "tone": "Amable, relajante, atento y cordial",
                 "services": [
-                    {"name": "Corte de Cabello y Estilismo", "price_cop": 28000, "duration_minutes": 40, "description": "Lavado, corte personalizado y peinado"},
-                    {"name": "Arreglo de Barba con Toalla Caliente", "price_cop": 18000, "duration_minutes": 30, "description": "Perfilado con navaja y tratamiento hidratante"},
-                    {"name": "Limpieza Facial Profunda e Hidratación", "price_cop": 75000, "duration_minutes": 60, "description": "Extracción de impurezas, vapor de ozono y mascarilla"},
-                    {"name": "Masaje Relajante Antiestrés", "price_cop": 95000, "duration_minutes": 50, "description": "Masaje corporal con aceites esenciales"},
-                    {"name": "Manicura y Pedicura Spa", "price_cop": 45000, "duration_minutes": 60, "description": "Exfoliación, limado y esmaltado tradicional o semipermanente"},
+                    {
+                        "name": "Corte de Cabello y Estilismo",
+                        "price_cop": 28000,
+                        "duration_minutes": 40,
+                        "description": "Lavado, corte personalizado y peinado",
+                    },
+                    {
+                        "name": "Arreglo de Barba con Toalla Caliente",
+                        "price_cop": 18000,
+                        "duration_minutes": 30,
+                        "description": "Perfilado con navaja y tratamiento hidratante",
+                    },
+                    {
+                        "name": "Limpieza Facial Profunda e Hidratación",
+                        "price_cop": 75000,
+                        "duration_minutes": 60,
+                        "description": "Extracción de impurezas, vapor de ozono y mascarilla",
+                    },
+                    {
+                        "name": "Masaje Relajante Antiestrés",
+                        "price_cop": 95000,
+                        "duration_minutes": 50,
+                        "description": "Masaje corporal con aceites esenciales",
+                    },
+                    {
+                        "name": "Manicura y Pedicura Spa",
+                        "price_cop": 45000,
+                        "duration_minutes": 60,
+                        "description": "Exfoliación, limado y esmaltado tradicional o semipermanente",
+                    },
                 ],
                 "schedule_weekdays": "Lunes a Viernes: 9:00 AM - 7:00 PM",
                 "schedule_saturdays": "Sábados: 9:00 AM - 7:00 PM",
                 "holiday_policy": "Festivos: Atención de 10:00 AM a 2:00 PM con reserva previa",
                 "cancellation_policy": "Cancelar o reprogramar con mínimo 2 horas de anticipación",
                 "tolerance_minutes": 15,
-                "payment_methods": ["Nequi / Daviplata", "Transferencia", "Tarjetas débito/crédito", "Efectivo"],
+                "payment_methods": [
+                    "Nequi / Daviplata",
+                    "Transferencia",
+                    "Tarjetas débito/crédito",
+                    "Efectivo",
+                ],
                 "faqs": [
-                    {"question": "¿Debo traer algo a mi sesión de spa?", "answer": "No es necesario, te suministramos toalla y bata desechable para tu comodidad."},
-                    {"question": "¿Se puede pagar al llegar?", "answer": "Sí, recibimos pagos por Nequi, Daviplata, tarjetas y efectivo al momento de tu atención."}
+                    {
+                        "question": "¿Debo traer algo a mi sesión de spa?",
+                        "answer": "No es necesario, te suministramos toalla y bata desechable para tu comodidad.",
+                    },
+                    {
+                        "question": "¿Se puede pagar al llegar?",
+                        "answer": "Sí, recibimos pagos por Nequi, Daviplata, tarjetas y efectivo al momento de tu atención.",
+                    },
                 ],
             }
         elif any(k in ind for k in ("legal", "abogad", "jurídic", "ley", "notar", "tributar")):
@@ -388,10 +470,30 @@ class AgentConfigService:
                 "agent_name": "Martín",
                 "tone": "Formal, profesional, confidencial y respetuoso",
                 "services": [
-                    {"name": "Consulta Jurídica y Diagnóstico Inicial", "price_cop": 100000, "duration_minutes": 45, "description": "Evaluación del caso y viabilidad jurídica"},
-                    {"name": "Revisión y Redacción de Contratos", "price_cop": 220000, "duration_minutes": 60, "description": "Análisis de cláusulas comerciales, laborales o de arrendamiento"},
-                    {"name": "Asesoría Laboral y Pensional", "price_cop": 150000, "duration_minutes": 60, "description": "Estudio de liquidaciones, fueros y derechos laborales"},
-                    {"name": "Trámites y Representación Legal", "price_cop": 350000, "duration_minutes": 60, "description": "Acompañamiento en diligencias o audiencias de conciliación"},
+                    {
+                        "name": "Consulta Jurídica y Diagnóstico Inicial",
+                        "price_cop": 100000,
+                        "duration_minutes": 45,
+                        "description": "Evaluación del caso y viabilidad jurídica",
+                    },
+                    {
+                        "name": "Revisión y Redacción de Contratos",
+                        "price_cop": 220000,
+                        "duration_minutes": 60,
+                        "description": "Análisis de cláusulas comerciales, laborales o de arrendamiento",
+                    },
+                    {
+                        "name": "Asesoría Laboral y Pensional",
+                        "price_cop": 150000,
+                        "duration_minutes": 60,
+                        "description": "Estudio de liquidaciones, fueros y derechos laborales",
+                    },
+                    {
+                        "name": "Trámites y Representación Legal",
+                        "price_cop": 350000,
+                        "duration_minutes": 60,
+                        "description": "Acompañamiento en diligencias o audiencias de conciliación",
+                    },
                 ],
                 "schedule_weekdays": "Lunes a Viernes: 8:00 AM - 5:30 PM",
                 "schedule_saturdays": "Sábados: 9:00 AM - 12:00 PM (Solo virtual)",
@@ -400,7 +502,10 @@ class AgentConfigService:
                 "tolerance_minutes": 15,
                 "payment_methods": ["Transferencia Bancolombia", "Nequi", "Tarjeta de Crédito"],
                 "faqs": [
-                    {"question": "¿La consulta puede ser virtual?", "answer": "Sí, disponemos de sesiones presenciales o por Google Meet según tu preferencia."}
+                    {
+                        "question": "¿La consulta puede ser virtual?",
+                        "answer": "Sí, disponemos de sesiones presenciales o por Google Meet según tu preferencia.",
+                    }
                 ],
             }
         elif any(k in ind for k in ("taller", "mecánic", "auto", "moto", "vehícul", "freno")):
@@ -408,10 +513,30 @@ class AgentConfigService:
                 "agent_name": "Andrés",
                 "tone": "Claro, técnico, confiable y resolutivo",
                 "services": [
-                    {"name": "Diagnóstico y Escáner Computarizado", "price_cop": 60000, "duration_minutes": 45, "description": "Lectura de códigos de falla y revisión electrónica"},
-                    {"name": "Cambio de Aceite y Filtros", "price_cop": 140000, "duration_minutes": 45, "description": "Aceite sintético/semisintético y filtro de motor"},
-                    {"name": "Mantenimiento Preventivo de Frenos", "price_cop": 95000, "duration_minutes": 60, "description": "Limpieza, graduación y cambio de pastillas"},
-                    {"name": "Alineación y Balanceo", "price_cop": 50000, "duration_minutes": 40, "description": "Alineación láser 3D y balanceo de 4 ruedas"},
+                    {
+                        "name": "Diagnóstico y Escáner Computarizado",
+                        "price_cop": 60000,
+                        "duration_minutes": 45,
+                        "description": "Lectura de códigos de falla y revisión electrónica",
+                    },
+                    {
+                        "name": "Cambio de Aceite y Filtros",
+                        "price_cop": 140000,
+                        "duration_minutes": 45,
+                        "description": "Aceite sintético/semisintético y filtro de motor",
+                    },
+                    {
+                        "name": "Mantenimiento Preventivo de Frenos",
+                        "price_cop": 95000,
+                        "duration_minutes": 60,
+                        "description": "Limpieza, graduación y cambio de pastillas",
+                    },
+                    {
+                        "name": "Alineación y Balanceo",
+                        "price_cop": 50000,
+                        "duration_minutes": 40,
+                        "description": "Alineación láser 3D y balanceo de 4 ruedas",
+                    },
                 ],
                 "schedule_weekdays": "Lunes a Viernes: 7:30 AM - 5:30 PM",
                 "schedule_saturdays": "Sábados: 8:00 AM - 2:00 PM",
@@ -420,7 +545,10 @@ class AgentConfigService:
                 "tolerance_minutes": 15,
                 "payment_methods": ["Nequi", "Daviplata", "Bancolombia", "Tarjetas", "Efectivo"],
                 "faqs": [
-                    {"question": "¿Debo dejar el carro todo el día?", "answer": "Para servicios rápidos de mantenimiento o escáner puedes esperar en nuestra sala de clientes (toma entre 40 y 60 min)."}
+                    {
+                        "question": "¿Debo dejar el carro todo el día?",
+                        "answer": "Para servicios rápidos de mantenimiento o escáner puedes esperar en nuestra sala de clientes (toma entre 40 y 60 min).",
+                    }
                 ],
             }
         elif any(k in ind for k in ("restauran", "comida", "gastronom", "café", "bar", "pizza")):
@@ -428,9 +556,24 @@ class AgentConfigService:
                 "agent_name": "Mateo",
                 "tone": "Cálido, anfitrión, alegre y servicial",
                 "services": [
-                    {"name": "Reserva de Mesa Estándar", "price_cop": 0, "duration_minutes": 90, "description": "Mesa reservada hasta para 6 personas"},
-                    {"name": "Reserva Cumpleaños / Celebración", "price_cop": 0, "duration_minutes": 120, "description": "Mesa decorada y postre de cortesía para el festejado"},
-                    {"name": "Menú Degustación Ejecutivo", "price_cop": 35000, "duration_minutes": 60, "description": "Entrada, plato fuerte, postre y bebida del día"},
+                    {
+                        "name": "Reserva de Mesa Estándar",
+                        "price_cop": 0,
+                        "duration_minutes": 90,
+                        "description": "Mesa reservada hasta para 6 personas",
+                    },
+                    {
+                        "name": "Reserva Cumpleaños / Celebración",
+                        "price_cop": 0,
+                        "duration_minutes": 120,
+                        "description": "Mesa decorada y postre de cortesía para el festejado",
+                    },
+                    {
+                        "name": "Menú Degustación Ejecutivo",
+                        "price_cop": 35000,
+                        "duration_minutes": 60,
+                        "description": "Entrada, plato fuerte, postre y bebida del día",
+                    },
                 ],
                 "schedule_weekdays": "Lunes a Viernes: 12:00 PM - 10:00 PM",
                 "schedule_saturdays": "Sábados: 12:00 PM - 11:00 PM",
@@ -439,7 +582,10 @@ class AgentConfigService:
                 "tolerance_minutes": 15,
                 "payment_methods": ["Tarjetas débito/crédito", "Nequi", "Daviplata", "Efectivo"],
                 "faqs": [
-                    {"question": "¿Tienen opciones vegetarianas?", "answer": "Sí, disponemos de opciones vegetarianas y libres de gluten en nuestra carta."}
+                    {
+                        "question": "¿Tienen opciones vegetarianas?",
+                        "answer": "Sí, disponemos de opciones vegetarianas y libres de gluten en nuestra carta.",
+                    }
                 ],
             }
         else:
@@ -447,18 +593,41 @@ class AgentConfigService:
                 "agent_name": "Valentina",
                 "tone": "Profesional, atento, resolutivo y cercano",
                 "services": [
-                    {"name": "Sesión de Asesoría y Diagnóstico", "price_cop": 50000, "duration_minutes": 45, "description": "Revisión inicial del requerimiento y propuesta"},
-                    {"name": "Servicio Estándar de Atención", "price_cop": 110000, "duration_minutes": 60, "description": "Atención especializada completa"},
-                    {"name": "Servicio Premium Personalizado", "price_cop": 190000, "duration_minutes": 90, "description": "Solución integral con seguimiento prioritario"},
+                    {
+                        "name": "Sesión de Asesoría y Diagnóstico",
+                        "price_cop": 50000,
+                        "duration_minutes": 45,
+                        "description": "Revisión inicial del requerimiento y propuesta",
+                    },
+                    {
+                        "name": "Servicio Estándar de Atención",
+                        "price_cop": 110000,
+                        "duration_minutes": 60,
+                        "description": "Atención especializada completa",
+                    },
+                    {
+                        "name": "Servicio Premium Personalizado",
+                        "price_cop": 190000,
+                        "duration_minutes": 90,
+                        "description": "Solución integral con seguimiento prioritario",
+                    },
                 ],
                 "schedule_weekdays": "Lunes a Viernes: 8:00 AM - 6:00 PM",
                 "schedule_saturdays": "Sábados: 9:00 AM - 1:00 PM",
                 "holiday_policy": "Festivos solo atención hasta mediodía (8:00 AM - 1:00 PM)",
                 "cancellation_policy": "Avisar con mínimo 2 horas de anticipación",
                 "tolerance_minutes": 15,
-                "payment_methods": ["Nequi / Daviplata", "Transferencia Bancolombia", "Tarjetas", "Efectivo"],
+                "payment_methods": [
+                    "Nequi / Daviplata",
+                    "Transferencia Bancolombia",
+                    "Tarjetas",
+                    "Efectivo",
+                ],
                 "faqs": [
-                    {"question": "¿Cómo confirmo mi cita?", "answer": "Tu cita queda registrada en nuestro calendario inmediatamente acordemos la hora y tus datos de contacto."}
+                    {
+                        "question": "¿Cómo confirmo mi cita?",
+                        "answer": "Tu cita queda registrada en nuestro calendario inmediatamente acordemos la hora y tus datos de contacto.",
+                    }
                 ],
             }
 
@@ -512,7 +681,9 @@ class AgentConfigService:
         enriched_data = None
 
         try:
-            provider = LLMProviderFactory().get_provider("google", "gemini-3.8-flash", system_instruction)
+            provider = LLMProviderFactory().get_provider(
+                "google", "gemini-3.8-flash", system_instruction
+            )
             resp = await asyncio.wait_for(
                 provider.generate(
                     system_prompt=system_instruction,
@@ -548,8 +719,12 @@ class AgentConfigService:
                 )
         if not service_items:
             service_items = [
-                ServiceItem(name="Consulta inicial y diagnóstico", price_cop=60000, duration_minutes=45),
-                ServiceItem(name="Servicio estándar de atención", price_cop=120000, duration_minutes=60),
+                ServiceItem(
+                    name="Consulta inicial y diagnóstico", price_cop=60000, duration_minutes=45
+                ),
+                ServiceItem(
+                    name="Servicio estándar de atención", price_cop=120000, duration_minutes=60
+                ),
             ]
 
         full_schedule = f"{data.get('schedule_weekdays', 'Lunes a Viernes: 8:00 AM - 6:00 PM')}\n{data.get('schedule_saturdays', 'Sábados: 9:00 AM - 1:00 PM')}"
@@ -562,11 +737,17 @@ class AgentConfigService:
             tone=data.get("tone", "profesional, cálido y servicial"),
             services=service_items,
             schedule=full_schedule,
-            holiday_policy=data.get("holiday_policy", "Días festivos: atención hasta mediodía (8:00 AM - 1:00 PM)"),
+            holiday_policy=data.get(
+                "holiday_policy", "Días festivos: atención hasta mediodía (8:00 AM - 1:00 PM)"
+            ),
             cancellation_policy_hours=2,
-            cancellationPolicy=data.get("cancellation_policy", "Avisar con mínimo 2 horas de anticipación"),
+            cancellationPolicy=data.get(
+                "cancellation_policy", "Avisar con mínimo 2 horas de anticipación"
+            ),
             tolerance_minutes=int(data.get("tolerance_minutes") or 15),
-            payment_methods=data.get("payment_methods", ["Nequi / Daviplata", "Tarjetas", "Efectivo"]),
+            payment_methods=data.get(
+                "payment_methods", ["Nequi / Daviplata", "Tarjetas", "Efectivo"]
+            ),
             faqs=data.get("faqs", []),
             use_emojis=True,
         )
@@ -578,10 +759,17 @@ class AgentConfigService:
             services=service_items,
             schedule_weekdays=data.get("schedule_weekdays", "Lunes a Viernes: 8:00 AM - 6:00 PM"),
             schedule_saturdays=data.get("schedule_saturdays", "Sábados: 9:00 AM - 1:00 PM"),
-            holiday_policy=data.get("holiday_policy", "Festivos solo atención hasta mediodía (8:00 AM - 1:00 PM)"),
-            cancellation_policy=data.get("cancellation_policy", "Cancelar o reprogramar con mínimo 2 horas de anticipación"),
+            holiday_policy=data.get(
+                "holiday_policy", "Festivos solo atención hasta mediodía (8:00 AM - 1:00 PM)"
+            ),
+            cancellation_policy=data.get(
+                "cancellation_policy", "Cancelar o reprogramar con mínimo 2 horas de anticipación"
+            ),
             tolerance_minutes=int(data.get("tolerance_minutes") or 15),
-            payment_methods=data.get("payment_methods", ["Nequi / Daviplata", "Transferencia Bancolombia", "Tarjetas", "Efectivo"]),
+            payment_methods=data.get(
+                "payment_methods",
+                ["Nequi / Daviplata", "Transferencia Bancolombia", "Tarjetas", "Efectivo"],
+            ),
             faqs=data.get("faqs", []),
             recommended_system_prompt=master_prompt,
         )
@@ -677,7 +865,10 @@ def _build_system_prompt(answers: OnboardingAnswers) -> str:
     cancel_hours = (
         f"Se deben hacer con mínimo {answers.cancellation_policy_hours} horas de anticipación."
         if answers.cancellation_policy_hours is not None
-        else (answers.cancellationPolicy or "Avisar cancelación o reprogramación con mínimo 2 horas de anticipación.")
+        else (
+            answers.cancellationPolicy
+            or "Avisar cancelación o reprogramación con mínimo 2 horas de anticipación."
+        )
     )
     holiday_rule = (
         answers.holiday_policy
@@ -691,7 +882,9 @@ def _build_system_prompt(answers: OnboardingAnswers) -> str:
     elif isinstance(answers.payment_methods, str) and answers.payment_methods.strip():
         payment_text = answers.payment_methods.strip()
     else:
-        payment_text = "Nequi / Daviplata, Transferencia Bancolombia, Tarjetas débito/crédito y Efectivo."
+        payment_text = (
+            "Nequi / Daviplata, Transferencia Bancolombia, Tarjetas débito/crédito y Efectivo."
+        )
 
     # FAQs
     faqs_block = ""

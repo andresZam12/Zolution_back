@@ -150,7 +150,9 @@ async def send_verification_email(
             await asyncio.to_thread(
                 _send_smtp_sync, settings, to_email, subject, plain_content, html_content
             )
-            logger.info("Verification email sent via SMTP (%s) to %s", settings.SMTP_HOST.strip(), to_email)
+            logger.info(
+                "Verification email sent via SMTP (%s) to %s", settings.SMTP_HOST.strip(), to_email
+            )
             return True, "Enviado exitosamente vía SMTP."
         except Exception as exc:
             last_error = f"SMTP error ({settings.SMTP_HOST.strip()}): {exc}"
@@ -193,7 +195,11 @@ async def send_verification_email(
     provider_configured = (
         bool(settings.BREVO_API_KEY.strip())
         or bool(settings.RESEND_API_KEY.strip())
-        or bool(settings.SMTP_HOST.strip() and settings.SMTP_USER.strip() and settings.SMTP_PASSWORD.strip())
+        or bool(
+            settings.SMTP_HOST.strip()
+            and settings.SMTP_USER.strip()
+            and settings.SMTP_PASSWORD.strip()
+        )
     )
     if not provider_configured and settings.APP_ENV != "production":
         logger.warning(

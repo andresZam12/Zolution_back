@@ -54,7 +54,6 @@ from app.agents import models as _agent_models  # noqa: E402, F401
 from app.auth.models import UserContext, UserRole  # noqa: E402
 from app.tenants import models as _tenant_models  # noqa: E402, F401
 
-
 # Real PostgreSQL for tests that depend on migrations and RLS. Point this at a
 # disposable database owned by a non-superuser role: its schema is recreated.
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")

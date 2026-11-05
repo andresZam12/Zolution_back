@@ -3,6 +3,7 @@ WhatsApp Cloud API client.
 """
 
 import logging
+
 import httpx
 
 from app.core.config import get_settings
@@ -24,9 +25,7 @@ class WhatsAppClient:
     @property
     def token(self) -> str:
         return (
-            self.settings.WHATSAPP_API_TOKEN
-            or self.settings.WHATSAPP_ACCESS_TOKEN
-            or ""
+            self.settings.WHATSAPP_API_TOKEN or self.settings.WHATSAPP_ACCESS_TOKEN or ""
         ).strip()
 
     async def send_text_message(self, phone_number_id: str, to: str, text: str) -> dict:
@@ -40,7 +39,9 @@ class WhatsAppClient:
         """
         token = self.token
         if not token:
-            logger.error("Cannot send WhatsApp message: WHATSAPP_API_TOKEN is empty in environment.")
+            logger.error(
+                "Cannot send WhatsApp message: WHATSAPP_API_TOKEN is empty in environment."
+            )
             raise WhatsAppClientError("WHATSAPP_API_TOKEN is not configured.")
 
         # Strip '+' and all non-numeric characters for Meta API

@@ -362,7 +362,11 @@ async def login(
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
-    if not user or not user.password_hash or not verify_password(payload.password, user.password_hash):
+    if (
+        not user
+        or not user.password_hash
+        or not verify_password(payload.password, user.password_hash)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Correo o contraseña incorrectos.",
@@ -382,13 +386,14 @@ async def login(
         org = (await db.execute(org_stmt)).scalar_one_or_none()
         try:
             await bind_tenant(db, user.organization_id)
-            agent_stmt = select(AgentConfig).where(AgentConfig.organization_id == user.organization_id)
+            agent_stmt = select(AgentConfig).where(
+                AgentConfig.organization_id == user.organization_id
+            )
             agent_cfg = (await db.execute(agent_stmt)).scalar_one_or_none()
             if agent_cfg and isinstance(agent_cfg.onboarding_answers, dict):
-                org_industry = (
-                    agent_cfg.onboarding_answers.get("industry")
-                    or agent_cfg.onboarding_answers.get("business_type")
-                )
+                org_industry = agent_cfg.onboarding_answers.get(
+                    "industry"
+                ) or agent_cfg.onboarding_answers.get("business_type")
         except Exception:
             pass
 
@@ -455,7 +460,9 @@ async def get_google_auth_url(redirect_uri: Optional[str] = None, state: Optiona
         else "https://zolution-front.vercel.app/login"
     )
     target_state = state or "auth_login"
-    auth_url = oauth_service.get_authorization_url(organization_id=target_state, redirect_uri=target_redirect)
+    auth_url = oauth_service.get_authorization_url(
+        organization_id=target_state, redirect_uri=target_redirect
+    )
     return GoogleAuthUrlResponse(auth_url=auth_url)
 
 
@@ -481,7 +488,9 @@ async def google_auth_callback(
     oauth_service = GoogleOAuthService()
 
     try:
-        tokens = await oauth_service.exchange_code_for_tokens(payload.code, redirect_uri=target_redirect)
+        tokens = await oauth_service.exchange_code_for_tokens(
+            payload.code, redirect_uri=target_redirect
+        )
     except Exception as exc:
         logger.error("Failed exchanging Google OAuth code: %s", exc)
         raise HTTPException(
@@ -621,10 +630,9 @@ async def google_auth_callback(
             agent_stmt = select(AgentConfig).where(AgentConfig.organization_id == org.id)
             agent_cfg = (await db.execute(agent_stmt)).scalar_one_or_none()
             if agent_cfg and isinstance(agent_cfg.onboarding_answers, dict):
-                saved_industry = (
-                    agent_cfg.onboarding_answers.get("industry")
-                    or agent_cfg.onboarding_answers.get("business_type")
-                )
+                saved_industry = agent_cfg.onboarding_answers.get(
+                    "industry"
+                ) or agent_cfg.onboarding_answers.get("business_type")
         except Exception:
             pass
 

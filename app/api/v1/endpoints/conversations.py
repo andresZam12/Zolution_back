@@ -3,9 +3,9 @@ Conversation API endpoints for the tenant dashboard and Live WhatsApp Simulator.
 """
 
 import logging
+import uuid
 from typing import Optional
 from uuid import UUID
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -165,7 +165,9 @@ async def simulate_conversation_turn(
 
     session_id = (payload.session_id or "").strip()
     customer_phone = (
-        f"+57-sim-{session_id}" if session_id else (payload.customer_phone or "+57 300 000 0000").strip()
+        f"+57-sim-{session_id}"
+        if session_id
+        else (payload.customer_phone or "+57 300 000 0000").strip()
     )
     customer_name = (payload.customer_name or "Cliente Simulador WhatsApp").strip()
 

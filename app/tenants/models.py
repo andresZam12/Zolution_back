@@ -94,8 +94,12 @@ class User(Base):
         server_default=func.gen_random_uuid(),
     )
     # Auth0 subject identifier — nullable for native email / Google logins
-    auth0_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
-    google_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    auth0_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
+    google_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True, unique=True, index=True
+    )
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # owner | staff | superadmin — matches UserRole enum
@@ -153,4 +157,6 @@ class VerificationCode(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<VerificationCode email={self.email!r} used={self.is_used} attempts={self.attempts}>"
+        return (
+            f"<VerificationCode email={self.email!r} used={self.is_used} attempts={self.attempts}>"
+        )

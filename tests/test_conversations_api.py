@@ -13,7 +13,9 @@ from app.tenants.models import Organization
 async def test_list_and_get_conversations(db_session: AsyncSession):
     """Test ConversationService list and get methods."""
     org_id = uuid.uuid4()
-    db_session.add(Organization(id=org_id, name="Negocio", slug="negocio", plan="starter", status="active"))
+    db_session.add(
+        Organization(id=org_id, name="Negocio", slug="negocio", plan="starter", status="active")
+    )
     await db_session.flush()
     await bind_tenant(db_session, org_id)
     service = ConversationService(db_session)

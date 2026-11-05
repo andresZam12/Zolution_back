@@ -36,6 +36,7 @@ async def subscribe_whatsapp_waba(_user: UserContext = Depends(require_superadmi
     This registers the app so Meta forwards incoming WhatsApp messages to our callback URL.
     """
     import httpx
+
     settings = get_settings()
     token = (settings.WHATSAPP_API_TOKEN or settings.WHATSAPP_ACCESS_TOKEN or "").strip()
     waba_id = settings.WHATSAPP_WABA_ID.strip()
@@ -57,7 +58,9 @@ async def subscribe_whatsapp_waba(_user: UserContext = Depends(require_superadmi
             )
             results["waba_subscription"] = {
                 "status_code": r1.status_code,
-                "data": r1.json() if "application/json" in r1.headers.get("content-type", "") else r1.text,
+                "data": r1.json()
+                if "application/json" in r1.headers.get("content-type", "")
+                else r1.text,
             }
         except Exception as e:
             results["waba_subscription_error"] = str(e)
@@ -71,7 +74,9 @@ async def subscribe_whatsapp_waba(_user: UserContext = Depends(require_superadmi
             )
             results["current_subscribed_apps"] = {
                 "status_code": r2.status_code,
-                "data": r2.json() if "application/json" in r2.headers.get("content-type", "") else r2.text,
+                "data": r2.json()
+                if "application/json" in r2.headers.get("content-type", "")
+                else r2.text,
             }
         except Exception as e:
             results["check_subscription_error"] = str(e)
@@ -90,6 +95,7 @@ async def verify_whatsapp_webhook(
     Webhook verification endpoint. Meta calls this when you configure the webhook URL.
     """
     from fastapi.responses import PlainTextResponse
+
     settings = get_settings()
 
     if not hub_mode or not hub_verify_token:
@@ -121,7 +127,9 @@ async def receive_whatsapp_webhook(
     settings = get_settings()
     if not settings.WHATSAPP_APP_SECRET:
         logger.error("Rejected WhatsApp webhook: WHATSAPP_APP_SECRET is not configured")
-        raise HTTPException(status_code=503, detail="Webhook signature validation is not configured")
+        raise HTTPException(
+            status_code=503, detail="Webhook signature validation is not configured"
+        )
 
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256", "")
@@ -163,7 +171,9 @@ async def receive_whatsapp_webhook(
 
             # Meta may batch several messages in one delivery
             for message in value.messages:
-                logger.info(f"WhatsApp {message.type} message {message.id} on phone_id {phone_number_id}")
+                logger.info(
+                    f"WhatsApp {message.type} message {message.id} on phone_id {phone_number_id}"
+                )
                 if message.type == "text" and message.text:
                     background_tasks.add_task(
                         process_message_background_task,

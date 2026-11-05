@@ -7,11 +7,11 @@ differ: how the customer message arrives and where the reply goes.
 """
 
 import asyncio
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 import logging
 import re
 import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,7 +50,16 @@ NO_CATALOG_TEXT = (
 )
 
 _CALENDAR_KEYWORDS = (
-    "cita", "hora", "agendar", "disponib", "espacio", "turno", "reservar", "mañana", "calendario", "cupo",
+    "cita",
+    "hora",
+    "agendar",
+    "disponib",
+    "espacio",
+    "turno",
+    "reservar",
+    "mañana",
+    "calendario",
+    "cupo",
 )
 _INCOMPLETE_ENDING = (
     r"\b(para mañana|mañana|a las|a|el día|para|las|el|en|confirmada para|"
@@ -84,7 +93,7 @@ def _services_text(answers: dict) -> str:
                 duration = service.get("duration_minutes") or service.get("duration") or ""
                 line = f"- {name}"
                 if price:
-                    line += f": ${price:,} COP" if isinstance(price, (int, float)) else f": {price}"
+                    line += f": ${price:,} COP" if isinstance(price, int | float) else f": {price}"
                 if duration:
                     line += f" ({duration} min)"
                 lines.append(line)
@@ -106,7 +115,9 @@ def _build_system_prompt(
     availability_text: str,
     now: datetime,
 ) -> str:
-    schedule = answers.get("schedule") or answers.get("hours") or "Lunes a Viernes 8:00 AM - 6:00 PM"
+    schedule = (
+        answers.get("schedule") or answers.get("hours") or "Lunes a Viernes 8:00 AM - 6:00 PM"
+    )
     current_time = format_time_12h(now.replace(tzinfo=BOGOTA))
     return (
         f"{base_prompt}\n\n"
@@ -246,7 +257,9 @@ async def run_agent_turn(
     agent_name = answers.get("agentName") or answers.get("agent_name") or "Asistente"
     now = local_now()
     availability_date = f"{now + timedelta(days=1):%Y-%m-%d}"
-    schedule = answers.get("schedule") or answers.get("hours") or "Lunes a Viernes 8:00 AM - 6:00 PM"
+    schedule = (
+        answers.get("schedule") or answers.get("hours") or "Lunes a Viernes 8:00 AM - 6:00 PM"
+    )
 
     appointments = AppointmentService(db, agent_config.organization_id, calendar)
     upcoming = await appointments.upcoming_for_customer(customer_phone)
