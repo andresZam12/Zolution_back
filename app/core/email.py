@@ -39,13 +39,13 @@ def build_verification_html(code: str, company_name: Optional[str] = None) -> st
         <div class="container">
           <div class="header">
             <div class="logo">Z</div>
-            <h1 style="margin: 0; font-size: 22px;">Zolution AI Platform</h1>
+            <h1 style="margin: 0; font-size: 22px;">Zabio</h1>
             <p style="margin: 6px 0 0; opacity: 0.9; font-size: 13px;">Verificación de cuenta y seguridad</p>
           </div>
           <div class="content">
             <h2 style="font-size: 18px; margin-top: 0;">Tu código de verificación</h2>
             <p style="color: #52525b; font-size: 14px; line-height: 1.5;">
-              Has solicitado registrarte o iniciar sesión {name_display} en Zolution. Usa el siguiente código de 6 dígitos para verificar tu cuenta:
+              Has solicitado registrarte o iniciar sesión {name_display} en Zabio. Usa el siguiente código de 6 dígitos para verificar tu cuenta:
             </p>
             <div class="code-box">
               <div class="code">{code}</div>
@@ -55,7 +55,7 @@ def build_verification_html(code: str, company_name: Optional[str] = None) -> st
             </p>
           </div>
           <div class="footer">
-            © Zolution AI · Automatización Inteligente con WhatsApp y Google Calendar
+            © Zabio · Atención inteligente. Agenda en orden.
           </div>
         </div>
       </body>
@@ -81,7 +81,7 @@ def _send_smtp_sync(
 
     msg = email.message.EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = f"Zolution <{user}>"
+    msg["From"] = f"Zabio <{user}>"
     msg["To"] = to_email.strip()
     msg.set_content(plain_content)
     msg.add_alternative(html_content, subtype="html")
@@ -104,9 +104,9 @@ async def send_verification_email(
     Returns (success: bool, detail: str).
     """
     settings = get_settings()
-    subject = f"{code} es tu código de verificación de Zolution"
+    subject = f"{code} es tu código de verificación de Zabio"
     html_content = build_verification_html(code, company_name)
-    plain_content = f"Tu código de verificación de Zolution es: {code}. Vence en 10 minutos."
+    plain_content = f"Tu código de verificación de Zabio es: {code}. Vence en 10 minutos."
 
     last_error = "No hay proveedores de correo configurados."
 
@@ -122,7 +122,7 @@ async def send_verification_email(
                         "Content-Type": "application/json",
                     },
                     json={
-                        "sender": {"name": "Zolution", "email": sender_email},
+                        "sender": {"name": "Zabio", "email": sender_email},
                         "to": [{"email": to_email.strip()}],
                         "subject": subject,
                         "htmlContent": html_content,

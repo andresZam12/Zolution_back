@@ -457,7 +457,7 @@ async def get_google_auth_url(redirect_uri: Optional[str] = None, state: Optiona
     target_redirect = redirect_uri or (
         settings.GOOGLE_REDIRECT_URI
         if settings.GOOGLE_REDIRECT_URI and "localhost" not in settings.GOOGLE_REDIRECT_URI
-        else "https://zolution-front.vercel.app/login"
+        else "https://zabio-agent.vercel.app/login"
     )
     target_state = state or "auth_login"
     auth_url = oauth_service.get_authorization_url(
@@ -483,7 +483,7 @@ async def google_auth_callback(
     target_redirect = payload.redirect_uri or (
         settings.GOOGLE_REDIRECT_URI
         if settings.GOOGLE_REDIRECT_URI and "localhost" not in settings.GOOGLE_REDIRECT_URI
-        else "https://zolution-front.vercel.app/login"
+        else "https://zabio-agent.vercel.app/login"
     )
     oauth_service = GoogleOAuthService()
 
